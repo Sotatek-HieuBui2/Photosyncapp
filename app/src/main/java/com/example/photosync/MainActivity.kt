@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -94,7 +96,14 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
         Spacer(modifier = Modifier.height(32.dp))
 
         if (uiState.isLoading) {
-            CircularProgressIndicator()
+            if (uiState.progress > 0f) {
+                LinearProgressIndicator(
+                    progress = uiState.progress,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                CircularProgressIndicator()
+            }
             Spacer(modifier = Modifier.height(16.dp))
             Text(text = uiState.statusMessage ?: "Loading...")
         } else {

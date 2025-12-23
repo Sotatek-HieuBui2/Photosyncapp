@@ -18,6 +18,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+import androidx.work.WorkInfo
+import java.util.UUID
+
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val authManager: AuthManager,
@@ -85,7 +88,37 @@ class MainViewModel @Inject constructor(
             val syncRequest = OneTimeWorkRequestBuilder<SyncWorker>().build()
             WorkManager.getInstance(application).enqueue(syncRequest)
             
-            _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = "Sync started in background")
+            observeSyncProgress(syncRequest.id)
+        }
+    }
+
+    private fun observeSyncProgress(workId: UUID) {
+        viewModelScope.launch {
+            WorkManager.getInstance(application).getWorkInfoByIdFlow(workId).collect { workInfo ->
+                if (workInfo != null) {
+                    val progress = workInfo.progress
+                    val current = progress.getInt("Current", 0)
+                    val total = progress.getInt("Total", 0)
+                    val percent = progress.getInt("Progress", 0)
+                    val estTime = progress.getLong("EstTime", 0)
+
+                    val status = when (workInfo.state) {
+                        WorkInfo.State.RUNNING -> {
+                            val timeString = if (estTime > 0) "${estTime / 1000}s remaining" else "Calculating..."
+                            "Syncing $current/$total ($percent%) - $timeString"
+                        }
+                        WorkInfo.State.SUCCEEDED -> "Sync Completed!"
+                        WorkInfo.State.FAILED -> "Sync Failed"
+                        else -> "Sync Status: ${workInfo.state}"
+                    }
+
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = workInfo.state == WorkInfo.State.RUNNING,
+                        statusMessage = status,
+                        progress = percent / 100f
+                    )
+                }
+            }
         }
     }
     
@@ -102,6 +135,7 @@ data class MainUiState(
     val isSignedIn: Boolean = false,
     val userEmail: String? = null,
     val isLoading: Boolean = false,
+    val statusMessage: String? = null,
     val error: String? = null,
-    val statusMessage: String? = null
+    val progress: Float = 0f
 )
