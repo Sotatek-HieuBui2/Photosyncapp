@@ -1,6 +1,7 @@
 package com.example.photosync.data.remote
 
 import okhttp3.RequestBody
+import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.Header
 import retrofit2.http.POST
@@ -15,7 +16,7 @@ interface GooglePhotosApi {
         @Header("X-Goog-Upload-Content-Type") mimeType: String,
         @Header("X-Goog-Upload-Protocol") protocol: String = "raw",
         @Body fileBytes: RequestBody
-    ): String // Trả về uploadToken (dạng raw string)
+    ): ResponseBody // Trả về ResponseBody để xử lý raw string
 
     // Bước 2: Tạo Media Item từ uploadToken
     @POST("v1/mediaItems:batchCreate")

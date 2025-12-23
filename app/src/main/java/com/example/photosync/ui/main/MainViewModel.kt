@@ -90,8 +90,11 @@ class MainViewModel @Inject constructor(
     }
     
     fun signOut() {
-        tokenManager.clear()
-        _uiState.value = MainUiState() // Reset state
+        viewModelScope.launch {
+            authManager.signOut()
+            tokenManager.clear()
+            _uiState.value = MainUiState() // Reset state
+        }
     }
 }
 

@@ -28,6 +28,12 @@ import com.example.photosync.ui.main.MainViewModel
 import com.example.photosync.ui.theme.PhotoSyncTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.common.api.ApiException
+import android.Manifest
+import android.os.Build
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -48,6 +54,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+
+    // Permission Launcher
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.entries.all { it.value }
+        if (allGranted) {
+            viewModel.startSyncProcess()
+        } else {
+            // Handle permission denied (optional: show snackbar)
+        }
+    }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -86,7 +105,26 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
                 Text(text = uiState.statusMessage ?: "Ready to sync")
                 Spacer(modifier = Modifier.height(16.dp))
 
-                Button(onClick = { viewModel.startSyncProcess() }) {
+                Button(onClick = { 
+                    val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        arrayOf(
+                            Manifest.permission.READ_MEDIA_IMAGES,
+                            Manifest.permission.READ_MEDIA_VIDEO
+                        )
+                    } else {
+                        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                    }
+
+                    val allPermissionsGranted = permissionsToRequest.all {
+                        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                    }
+
+                    if (allPermissionsGranted) {
+                        viewModel.startSyncProcess()
+                    } else {
+                        permissionLauncher.launch(permissionsToRequest)
+                    }
+                }) {
                     Text("Sync Now")
                 }
                 
