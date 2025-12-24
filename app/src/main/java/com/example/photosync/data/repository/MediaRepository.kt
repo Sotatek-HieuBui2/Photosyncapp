@@ -6,6 +6,7 @@ import android.provider.MediaStore
 import android.util.Log
 import com.example.photosync.data.local.MediaDao
 import com.example.photosync.data.local.MediaItemEntity
+import com.example.photosync.data.local.TokenManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,14 +16,17 @@ import javax.inject.Singleton
 @Singleton
 class MediaRepository @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val mediaDao: MediaDao
+    private val mediaDao: MediaDao,
+    private val tokenManager: TokenManager
 ) {
     private val TAG = "MediaRepository"
 
     val allMediaItems = mediaDao.getAllMediaItems()
 
     suspend fun scanLocalMedia() = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Starting scanLocalMedia...")
+        val lastScanTime = tokenManager.getLastScanTime()
+        Log.d(TAG, "Starting scanLocalMedia... Last scan: $lastScanTime")
+        
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -32,20 +36,26 @@ class MediaRepository @Inject constructor(
         )
 
         // Scan Images
-        scanMediaStore(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection)
+        scanMediaStore(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, lastScanTime)
         
         // Scan Videos
-        scanMediaStore(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection)
+        scanMediaStore(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, lastScanTime)
+        
+        // Update last scan time to now (in seconds)
+        tokenManager.saveLastScanTime(System.currentTimeMillis() / 1000)
         Log.d(TAG, "scanLocalMedia completed.")
     }
 
-    private suspend fun scanMediaStore(uri: android.net.Uri, projection: Array<String>) {
+    private suspend fun scanMediaStore(uri: android.net.Uri, projection: Array<String>, lastScanTime: Long) {
+        val selection = "${MediaStore.MediaColumns.DATE_ADDED} > ?"
+        val selectionArgs = arrayOf(lastScanTime.toString())
+
         try {
             context.contentResolver.query(
                 uri,
                 projection,
-                null,
-                null,
+                selection,
+                selectionArgs,
                 "${MediaStore.MediaColumns.DATE_ADDED} DESC"
             )?.use { cursor ->
                 val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
@@ -75,7 +85,7 @@ class MediaRepository @Inject constructor(
                     mediaDao.insert(entity)
                     count++
                 }
-                Log.d(TAG, "Scanned $count items from $uri")
+                Log.d(TAG, "Scanned $count new items from $uri")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error scanning media: $uri", e)

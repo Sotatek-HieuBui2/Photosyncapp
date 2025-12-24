@@ -58,4 +58,12 @@ class TokenManager @Inject constructor(
     fun isAutoSyncEnabled(): Boolean {
         return settingsPrefs.getBoolean("auto_sync_enabled", false)
     }
+
+    fun saveLastScanTime(timestamp: Long) {
+        settingsPrefs.edit().putLong("last_scan_time", timestamp).apply()
+    }
+
+    fun getLastScanTime(): Long {
+        return settingsPrefs.getLong("last_scan_time", 0L)
+    }
 }
