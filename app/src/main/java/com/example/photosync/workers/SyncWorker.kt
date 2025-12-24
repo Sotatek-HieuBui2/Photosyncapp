@@ -24,6 +24,9 @@ import com.example.photosync.data.remote.BatchCreateRequest
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -39,7 +42,8 @@ class SyncWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val database: AppDatabase,
     private val api: GooglePhotosApi,
-    private val tokenManager: TokenManager
+    private val tokenManager: TokenManager,
+    private val mediaRepository: com.example.photosync.data.repository.MediaRepository
 ) : CoroutineWorker(context, params) {
 
     private val TAG = "SyncWorker"
@@ -48,11 +52,18 @@ class SyncWorker @AssistedInject constructor(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         Log.d(TAG, "Starting SyncWorker...")
         
+        // Scan for new media before syncing
+        try {
+            mediaRepository.scanLocalMedia()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to scan local media", e)
+        }
+        
         createNotificationChannel()
         
         // Đánh dấu là Foreground Service để không bị kill khi chạy lâu
         try {
-            setForeground(createForegroundInfo(0, 0, "Starting sync..."))
+            setForeground(createForegroundInfo(0, "Starting sync..."))
         } catch (e: Exception) {
             Log.e(TAG, "Failed to set foreground service", e)
         }
@@ -77,43 +88,51 @@ class SyncWorker @AssistedInject constructor(
 
             var syncedCount = 0
             val startTime = System.currentTimeMillis()
-            var lastUpdateTime = 0L
-
-            for ((index, item) in unsyncedItems.withIndex()) {
-                if (isStopped) break
-
-                // Cập nhật Progress và Notification (Throttle: mỗi 1 giây hoặc item cuối)
-                val currentTime = System.currentTimeMillis()
-                if (currentTime - lastUpdateTime > 1000 || index == totalItems - 1) {
-                    lastUpdateTime = currentTime
+            
+            // Calculate total size for ETA
+            val totalSizeBytes = unsyncedItems.sumOf { it.fileSize }
+            var accumulatedBytes = 0L
+            var currentFileBytesUploaded = 0L
+            
+            // Launch a coroutine to update progress periodically
+            val progressJob = launch {
+                while (isActive) {
+                    delay(1000)
                     
-                    val progress = ((index.toFloat() / totalItems) * 100).roundToInt()
+                    val totalUploaded = accumulatedBytes + currentFileBytesUploaded
+                    val timeElapsed = System.currentTimeMillis() - startTime
                     
-                    // Tính toán thời gian ước tính
-                    val timeElapsed = currentTime - startTime
-                    val itemsProcessed = index
-                    val estimatedTimeRemaining = if (itemsProcessed > 0) {
-                        val avgTimePerItem = timeElapsed / itemsProcessed
-                        val itemsRemaining = totalItems - itemsProcessed
-                        avgTimePerItem * itemsRemaining
-                    } else {
-                        0L
+                    if (timeElapsed > 0 && totalUploaded > 0) {
+                        val speed = totalUploaded.toDouble() / timeElapsed // bytes per ms
+                        val remainingBytes = totalSizeBytes - totalUploaded
+                        val estimatedTimeRemaining = (remainingBytes / speed).toLong()
+                        
+                        val progress = ((totalUploaded.toDouble() / totalSizeBytes) * 100).roundToInt()
+                        
+                        val hours = java.util.concurrent.TimeUnit.MILLISECONDS.toHours(estimatedTimeRemaining)
+                        val minutes = java.util.concurrent.TimeUnit.MILLISECONDS.toMinutes(estimatedTimeRemaining) % 60
+                        val seconds = java.util.concurrent.TimeUnit.MILLISECONDS.toSeconds(estimatedTimeRemaining) % 60
+                        val timeString = String.format("%02d:%02d:%02d", hours, minutes, seconds)
+
+                        val statusMsg = "Syncing... ETA: $timeString"
+                        try {
+                            setForeground(createForegroundInfo(progress, statusMsg))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to update foreground notification", e)
+                        }
+                        
+                        setProgress(workDataOf(
+                            "Progress" to progress,
+                            "Current" to syncedCount + 1, // Approximate
+                            "Total" to totalItems,
+                            "EstTime" to estimatedTimeRemaining
+                        ))
                     }
-
-                    val statusMsg = "Syncing ${index + 1}/$totalItems"
-                    try {
-                        setForeground(createForegroundInfo(progress, totalItems, statusMsg))
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to update foreground notification", e)
-                    }
-                    
-                    setProgress(workDataOf(
-                        "Progress" to progress,
-                        "Current" to index + 1,
-                        "Total" to totalItems,
-                        "EstTime" to estimatedTimeRemaining
-                    ))
                 }
+            }
+
+            for (item in unsyncedItems) {
+                if (isStopped) break
 
                 Log.d(TAG, "Processing item: ${item.fileName} (ID: ${item.id})")
                 
@@ -121,7 +140,9 @@ class SyncWorker @AssistedInject constructor(
                 
                 // Sử dụng ContentResolver để đọc file thay vì File path trực tiếp (Scoped Storage)
                 val requestBody = try {
-                    createRequestBodyFromUri(applicationContext, contentUri, item.mimeType)
+                    createRequestBodyFromUri(applicationContext, contentUri, item.mimeType) { bytesWritten ->
+                        currentFileBytesUploaded = bytesWritten
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to open URI: $contentUri", e)
                     continue
@@ -146,6 +167,10 @@ class SyncWorker @AssistedInject constructor(
                     continue
                 }
                 Log.d(TAG, "Upload successful. Token: ${uploadToken.take(20)}...")
+                
+                // Update accumulated bytes after successful upload (or attempt)
+                accumulatedBytes += item.fileSize
+                currentFileBytesUploaded = 0
 
                 // 4. Tạo Media Item trên Google Photos
                 val simpleMediaItem = SimpleMediaItem(uploadToken)
@@ -176,7 +201,8 @@ class SyncWorker @AssistedInject constructor(
                     Log.e(TAG, "Sync failed for ${item.fileName}. Message: ${result?.status?.message}")
                 }
             }
-
+            
+            progressJob.cancel()
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "SyncWorker failed with exception", e)
@@ -193,7 +219,7 @@ class SyncWorker @AssistedInject constructor(
         }
     }
 
-    private fun createForegroundInfo(progress: Int, total: Int, message: String): ForegroundInfo {
+    private fun createForegroundInfo(progress: Int, message: String): ForegroundInfo {
         val channelId = "sync_channel"
         val title = "Photo Sync"
         
@@ -214,7 +240,7 @@ class SyncWorker @AssistedInject constructor(
         }
     }
 
-    private fun createRequestBodyFromUri(context: Context, uri: Uri, mimeType: String): RequestBody? {
+    private fun createRequestBodyFromUri(context: Context, uri: Uri, mimeType: String, onProgress: (Long) -> Unit): RequestBody? {
         return object : RequestBody() {
             override fun contentType(): MediaType? {
                 return mimeType.toMediaTypeOrNull()
@@ -223,7 +249,14 @@ class SyncWorker @AssistedInject constructor(
             override fun writeTo(sink: BufferedSink) {
                 context.contentResolver.openInputStream(uri)?.use { inputStream ->
                     inputStream.source().use { source ->
-                        sink.writeAll(source)
+                        var totalBytesWritten = 0L
+                        val buffer = okio.Buffer()
+                        var readCount: Long
+                        while (source.read(buffer, 8192).also { readCount = it } != -1L) {
+                            sink.write(buffer, readCount)
+                            totalBytesWritten += readCount
+                            onProgress(totalBytesWritten)
+                        }
                     }
                 } ?: throw IOException("Could not open input stream for $uri")
             }

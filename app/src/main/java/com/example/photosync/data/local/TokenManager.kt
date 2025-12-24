@@ -26,6 +26,10 @@ class TokenManager @Inject constructor(
         )
     }
 
+    private val settingsPrefs: SharedPreferences by lazy {
+        context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+    }
+
     fun saveAccessToken(token: String) {
         sharedPreferences.edit().putString("access_token", token).apply()
     }
@@ -44,5 +48,14 @@ class TokenManager @Inject constructor(
     
     fun clear() {
         sharedPreferences.edit().clear().apply()
+        settingsPrefs.edit().clear().apply()
+    }
+
+    fun saveAutoSyncState(isEnabled: Boolean) {
+        settingsPrefs.edit().putBoolean("auto_sync_enabled", isEnabled).apply()
+    }
+
+    fun isAutoSyncEnabled(): Boolean {
+        return settingsPrefs.getBoolean("auto_sync_enabled", false)
     }
 }

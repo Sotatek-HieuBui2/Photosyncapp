@@ -28,8 +28,8 @@ object NetworkModule {
         return OkHttpClient.Builder()
             .addInterceptor(logging)
             .connectTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(300, TimeUnit.SECONDS) // 5 minutes for large downloads/uploads
-            .writeTimeout(300, TimeUnit.SECONDS) // 5 minutes for large uploads
+            .readTimeout(30, TimeUnit.MINUTES) // Increased to 30 minutes for large video uploads
+            .writeTimeout(30, TimeUnit.MINUTES) // Increased to 30 minutes for large video uploads
             .build()
     }
 

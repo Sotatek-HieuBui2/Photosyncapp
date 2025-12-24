@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "407963020538",
+    "project_id": "photosyncapp-d298b",
+    "storage_bucket": "photosyncapp-d298b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:407963020538:android:3af62ea0a6ef6c6a93ad43",
+        "android_client_info": {
+          "package_name": "com.example.photosync"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAoHFhnLH3eF3XgG4m4QKKSbLKRmPvHL3Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

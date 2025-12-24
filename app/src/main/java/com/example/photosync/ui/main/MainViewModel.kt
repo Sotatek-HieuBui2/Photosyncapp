@@ -34,6 +34,8 @@ class MainViewModel @Inject constructor(
 
     init {
         checkLoginStatus()
+        checkAutoSyncStatus()
+        observeMediaItems()
     }
 
     private fun checkLoginStatus() {
@@ -44,6 +46,22 @@ class MainViewModel @Inject constructor(
                 isSignedIn = true,
                 userEmail = email
             )
+        }
+    }
+
+    private fun checkAutoSyncStatus() {
+        val isEnabled = tokenManager.isAutoSyncEnabled()
+        _uiState.value = _uiState.value.copy(isAutoSyncEnabled = isEnabled)
+        if (isEnabled) {
+            setupPeriodicSync()
+        }
+    }
+
+    private fun observeMediaItems() {
+        viewModelScope.launch {
+            mediaRepository.allMediaItems.collect { items ->
+                _uiState.value = _uiState.value.copy(mediaItems = items)
+            }
         }
     }
 
@@ -62,7 +80,8 @@ class MainViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     isSignedIn = true,
                     userEmail = account.email,
-                    isLoading = false
+                    isLoading = false,
+                    error = null
                 )
                 
                 // Sau khi login thành công, quét media và sync
@@ -74,6 +93,14 @@ class MainViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    fun setError(msg: String) {
+        _uiState.value = _uiState.value.copy(error = msg)
+    }
+
+    fun clearError() {
+        _uiState.value = _uiState.value.copy(error = null)
     }
 
     fun startSyncProcess() {
@@ -104,8 +131,13 @@ class MainViewModel @Inject constructor(
 
                     val status = when (workInfo.state) {
                         WorkInfo.State.RUNNING -> {
-                            val timeString = if (estTime > 0) "${estTime / 1000}s remaining" else "Calculating..."
-                            "Syncing $current/$total ($percent%) - $timeString"
+                            val hours = java.util.concurrent.TimeUnit.MILLISECONDS.toHours(estTime)
+                            val minutes = java.util.concurrent.TimeUnit.MILLISECONDS.toMinutes(estTime) % 60
+                            val seconds = java.util.concurrent.TimeUnit.MILLISECONDS.toSeconds(estTime) % 60
+                            val formattedTime = String.format("%02d:%02d:%02d", hours, minutes, seconds)
+                            
+                            val timeString = if (estTime > 0) "ETA: $formattedTime" else "Calculating time..."
+                            "Syncing $current/$total ($percent%) • $timeString"
                         }
                         WorkInfo.State.SUCCEEDED -> "Sync Completed!"
                         WorkInfo.State.FAILED -> "Sync Failed"
@@ -126,8 +158,48 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             authManager.signOut()
             tokenManager.clear()
-            _uiState.value = MainUiState() // Reset state
+            _uiState.value = _uiState.value.copy(
+                isSignedIn = false,
+                userEmail = null,
+                statusMessage = null,
+                error = null
+            )
         }
+    }
+
+    fun toggleAutoSync(enabled: Boolean) {
+        viewModelScope.launch {
+            tokenManager.saveAutoSyncState(enabled)
+            _uiState.value = _uiState.value.copy(isAutoSyncEnabled = enabled)
+            
+            if (enabled) {
+                setupPeriodicSync()
+            } else {
+                cancelPeriodicSync()
+            }
+        }
+    }
+
+    private fun setupPeriodicSync() {
+        val constraints = androidx.work.Constraints.Builder()
+            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+            .build()
+
+        val periodicWork = androidx.work.PeriodicWorkRequestBuilder<SyncWorker>(
+            15, java.util.concurrent.TimeUnit.MINUTES
+        )
+            .setConstraints(constraints)
+            .build()
+
+        WorkManager.getInstance(application).enqueueUniquePeriodicWork(
+            "AutoSyncWork",
+            androidx.work.ExistingPeriodicWorkPolicy.UPDATE,
+            periodicWork
+        )
+    }
+
+    private fun cancelPeriodicSync() {
+        WorkManager.getInstance(application).cancelUniqueWork("AutoSyncWork")
     }
 }
 
@@ -137,5 +209,7 @@ data class MainUiState(
     val isLoading: Boolean = false,
     val statusMessage: String? = null,
     val error: String? = null,
-    val progress: Float = 0f
+    val progress: Float = 0f,
+    val isAutoSyncEnabled: Boolean = false,
+    val mediaItems: List<com.example.photosync.data.local.MediaItemEntity> = emptyList()
 )

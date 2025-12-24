@@ -48,6 +48,7 @@ class AuthManager @Inject constructor(
             GoogleAuthUtil.getToken(context, account.account!!, scopes)
         } catch (e: Exception) {
             e.printStackTrace()
+            android.util.Log.e("AuthManager", "Error getting access token", e)
             null
         }
     }

@@ -19,6 +19,8 @@ class MediaRepository @Inject constructor(
 ) {
     private val TAG = "MediaRepository"
 
+    val allMediaItems = mediaDao.getAllMediaItems()
+
     suspend fun scanLocalMedia() = withContext(Dispatchers.IO) {
         Log.d(TAG, "Starting scanLocalMedia...")
         val projection = arrayOf(
