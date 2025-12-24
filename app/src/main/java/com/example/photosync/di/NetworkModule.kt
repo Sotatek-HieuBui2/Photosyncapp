@@ -12,6 +12,8 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import javax.inject.Singleton
 
+import java.util.concurrent.TimeUnit
+
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
@@ -20,10 +22,14 @@ object NetworkModule {
     @Singleton
     fun provideOkHttpClient(): OkHttpClient {
         val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            // Level.BODY causes OOM for large file uploads (videos). Use HEADERS instead.
+            level = HttpLoggingInterceptor.Level.HEADERS
         }
         return OkHttpClient.Builder()
             .addInterceptor(logging)
+            .connectTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(300, TimeUnit.SECONDS) // 5 minutes for large downloads/uploads
+            .writeTimeout(300, TimeUnit.SECONDS) // 5 minutes for large uploads
             .build()
     }
 
