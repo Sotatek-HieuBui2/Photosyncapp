@@ -44,6 +44,7 @@ class MediaRepository @Inject constructor(
         // Update last scan time to now (in seconds)
         tokenManager.saveLastScanTime(System.currentTimeMillis() / 1000)
         Log.d(TAG, "scanLocalMedia completed.")
+        Unit
     }
 
     private suspend fun scanMediaStore(uri: android.net.Uri, projection: Array<String>, lastScanTime: Long) {
@@ -64,6 +65,7 @@ class MediaRepository @Inject constructor(
                 val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
                 val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
 
+                val newItems = mutableListOf<MediaItemEntity>()
                 var count = 0
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idColumn)
@@ -82,8 +84,12 @@ class MediaRepository @Inject constructor(
                         mimeType = mime ?: "application/octet-stream",
                         fileSize = size
                     )
-                    mediaDao.insert(entity)
+                    newItems.add(entity)
                     count++
+                }
+                
+                if (newItems.isNotEmpty()) {
+                    mediaDao.insertAll(newItems)
                 }
                 Log.d(TAG, "Scanned $count new items from $uri")
             }

@@ -15,6 +15,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.photosync.R
+import com.example.photosync.data.local.MediaItemEntity
 import com.example.photosync.data.local.AppDatabase
 import com.example.photosync.data.local.TokenManager
 import com.example.photosync.data.remote.GooglePhotosApi
@@ -131,74 +132,100 @@ class SyncWorker @AssistedInject constructor(
                 }
             }
 
-            for (item in unsyncedItems) {
+            // Chunk items to respect Google Photos API batch limit (50 items per batch usually, but let's stick to smaller chunks for safety, e.g., 20)
+            val batchSize = 20
+            val chunks = unsyncedItems.chunked(batchSize)
+
+            for (chunk in chunks) {
                 if (isStopped) break
 
-                Log.d(TAG, "Processing item: ${item.fileName} (ID: ${item.id})")
-                
-                val contentUri = Uri.parse(item.id)
-                
-                // Sử dụng ContentResolver để đọc file thay vì File path trực tiếp (Scoped Storage)
-                val requestBody = try {
-                    createRequestBodyFromUri(applicationContext, contentUri, item.mimeType) { bytesWritten ->
-                        currentFileBytesUploaded = bytesWritten
+                val newMediaItems = mutableListOf<NewMediaItem>()
+                val successfulItems = mutableListOf<MediaItemEntity>()
+
+                // 1. Upload bytes for each item in chunk
+                for (item in chunk) {
+                    if (isStopped) break
+
+                    Log.d(TAG, "Processing item: ${item.fileName} (ID: ${item.id})")
+                    
+                    val contentUri = Uri.parse(item.id)
+                    
+                    // Sử dụng ContentResolver để đọc file thay vì File path trực tiếp (Scoped Storage)
+                    val requestBody = try {
+                        createRequestBodyFromUri(applicationContext, contentUri, item.mimeType) { bytesWritten ->
+                            currentFileBytesUploaded = bytesWritten
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to open URI: $contentUri", e)
+                        continue
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to open URI: $contentUri", e)
-                    continue
+
+                    if (requestBody == null) {
+                        Log.e(TAG, "RequestBody is null for $contentUri")
+                        continue
+                    }
+
+                    // 3. Upload Bytes
+                    Log.d(TAG, "Uploading bytes for ${item.fileName}...")
+                    val uploadToken = try {
+                        val responseBody = api.uploadMediaBytes(
+                            token = accessToken,
+                            mimeType = item.mimeType,
+                            fileBytes = requestBody
+                        )
+                        responseBody.string()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Upload failed for ${item.fileName}", e)
+                        continue
+                    }
+                    Log.d(TAG, "Upload successful. Token: ${uploadToken.take(20)}...")
+                    
+                    // Update accumulated bytes after successful upload (or attempt)
+                    accumulatedBytes += item.fileSize
+                    currentFileBytesUploaded = 0
+
+                    // 4. Prepare for Batch Create
+                    val simpleMediaItem = SimpleMediaItem(uploadToken)
+                    newMediaItems.add(NewMediaItem(description = "Uploaded via PhotoSync", simpleMediaItem = simpleMediaItem))
+                    successfulItems.add(item)
                 }
 
-                if (requestBody == null) {
-                    Log.e(TAG, "RequestBody is null for $contentUri")
-                    continue
-                }
-
-                // 3. Upload Bytes
-                Log.d(TAG, "Uploading bytes for ${item.fileName}...")
-                val uploadToken = try {
-                    val responseBody = api.uploadMediaBytes(
-                        token = accessToken,
-                        mimeType = item.mimeType,
-                        fileBytes = requestBody
-                    )
-                    responseBody.string()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Upload failed for ${item.fileName}", e)
-                    continue
-                }
-                Log.d(TAG, "Upload successful. Token: ${uploadToken.take(20)}...")
-                
-                // Update accumulated bytes after successful upload (or attempt)
-                accumulatedBytes += item.fileSize
-                currentFileBytesUploaded = 0
-
-                // 4. Tạo Media Item trên Google Photos
-                val simpleMediaItem = SimpleMediaItem(uploadToken)
-                val newMediaItem = NewMediaItem(description = "Uploaded via PhotoSync", simpleMediaItem = simpleMediaItem)
-                val batchRequest = BatchCreateRequest(newMediaItems = listOf(newMediaItem))
-                
-                Log.d(TAG, "Creating media item...")
-                val response = try {
-                    api.createMediaItems(accessToken, batchRequest)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Create media item failed", e)
-                    continue
-                }
-                
-                // 5. Cập nhật trạng thái trong DB
-                val result = response.newMediaItemResults.firstOrNull()
-                if (result?.status?.message == "Success" || result?.mediaItem != null) {
-                    val googleId = result?.mediaItem?.id
-                    Log.d(TAG, "Sync success for ${item.fileName}. Google ID: $googleId")
-                    database.mediaDao().updateSyncStatus(
-                        id = item.id,
-                        isSynced = true,
-                        googleId = googleId,
-                        timestamp = System.currentTimeMillis()
-                    )
-                    syncedCount++
-                } else {
-                    Log.e(TAG, "Sync failed for ${item.fileName}. Message: ${result?.status?.message}")
+                // 5. Batch create media items
+                if (newMediaItems.isNotEmpty()) {
+                    Log.d(TAG, "Creating batch of ${newMediaItems.size} media items...")
+                    try {
+                        val batchRequest = BatchCreateRequest(newMediaItems = newMediaItems)
+                        val response = api.createMediaItems(accessToken, batchRequest)
+                        
+                        // 6. Process response and update DB
+                        val updates = mutableListOf<MediaItemEntity>()
+                        
+                        response.newMediaItemResults.forEachIndexed { index, result ->
+                             val item = successfulItems.getOrNull(index) ?: return@forEachIndexed
+                             
+                             if (result.status.message == "Success" || result.status.message == "OK" || result.mediaItem != null) {
+                                 val googleId = result.mediaItem?.id
+                                 Log.d(TAG, "Sync success for ${item.fileName}. Google ID: $googleId")
+                                 
+                                 val updatedItem = item.copy(
+                                     isSynced = true,
+                                     googlePhotosId = googleId,
+                                     lastSyncedAt = System.currentTimeMillis()
+                                 )
+                                 updates.add(updatedItem)
+                                 syncedCount++
+                             } else {
+                                 Log.e(TAG, "Batch create failed for ${item.fileName}: ${result.status.message}")
+                             }
+                        }
+                        
+                        if (updates.isNotEmpty()) {
+                            database.mediaDao().updateAll(updates)
+                        }
+                        
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Batch create API call failed", e)
+                    }
                 }
             }
             
