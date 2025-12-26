@@ -15,6 +15,18 @@ interface MediaDao {
     @Query("SELECT * FROM media_items WHERE isSynced = 0")
     suspend fun getUnsyncedItems(): List<MediaItemEntity>
 
+    @Query("SELECT * FROM media_items WHERE googlePhotosId = :googleId LIMIT 1")
+    suspend fun getByGoogleId(googleId: String): MediaItemEntity?
+
+    @Query("SELECT * FROM media_items WHERE isSynced = 1 AND isLocal = 1")
+    suspend fun getSyncedLocalItems(): List<MediaItemEntity>
+
+    @Query("UPDATE media_items SET isLocal = :isLocal WHERE id = :id")
+    suspend fun updateLocalStatus(id: String, isLocal: Boolean)
+
+    @Query("DELETE FROM media_items WHERE id = :id")
+    suspend fun deleteById(id: String)
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(item: MediaItemEntity)
 
@@ -26,4 +38,7 @@ interface MediaDao {
 
     @Query("UPDATE media_items SET isSynced = :isSynced, googlePhotosId = :googleId, lastSyncedAt = :timestamp WHERE id = :id")
     suspend fun updateSyncStatus(id: String, isSynced: Boolean, googleId: String?, timestamp: Long)
+
+    @Query("UPDATE media_items SET tags = :tags WHERE id = :id")
+    suspend fun updateTags(id: String, tags: String)
 }

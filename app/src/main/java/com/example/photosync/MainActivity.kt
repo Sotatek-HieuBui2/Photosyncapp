@@ -5,9 +5,11 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
+import android.os.Build as AndroidBuild
 import android.os.Bundle
 import android.widget.Toast
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.material3.surfaceColorAtElevation
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -18,9 +20,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudUpload
@@ -46,6 +50,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.photosync.ui.main.MainViewModel
+import com.example.photosync.ui.components.MediaItemCard
+import com.example.photosync.ui.main.MediaUiItem
 import com.example.photosync.ui.theme.PhotoSyncTheme
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.common.api.ApiException
@@ -58,6 +64,28 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
 
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Collections
+import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.outlined.PhotoLibrary
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Settings
+import com.example.photosync.ui.tools.ToolsScreen
+import com.example.photosync.ui.tools.CollageScreen
+import android.provider.MediaStore
+import androidx.activity.result.IntentSenderRequest
+
+enum class Screen {
+    Photos, Search, Library, Collages
+}
+
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
@@ -65,20 +93,121 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             PhotoSyncTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    MainScreen()
+                // Main Navigation Controller
+                var currentScreen by remember { mutableStateOf(Screen.Photos) }
+                val context = LocalContext.current
+                
+                // Shared delete logic
+                var pendingDeleteItems by remember { mutableStateOf<List<com.example.photosync.data.local.MediaItemEntity>?>(null) }
+                
+                val deleteLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartIntentSenderForResult()
+                ) { result ->
+                    if (result.resultCode == Activity.RESULT_OK) {
+                        Toast.makeText(context, "Deleted successfully", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Deletion cancelled or failed", Toast.LENGTH_SHORT).show()
+                    }
+                    pendingDeleteItems = null
+                }
+
+                fun launchDelete(items: List<com.example.photosync.data.local.MediaItemEntity>) {
+                    if (items.isEmpty()) return
+                    pendingDeleteItems = items
+                    if (AndroidBuild.VERSION.SDK_INT >= AndroidBuild.VERSION_CODES.R) {
+                        val uris = items.map { Uri.parse(it.id) }
+                        val intentSender = MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender
+                        deleteLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+                    } else {
+                        Toast.makeText(context, "Batch delete requires Android 11+", Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                Scaffold(
+                    bottomBar = {
+                        if (currentScreen != Screen.Collages) {
+                            NavigationBar(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                tonalElevation = 3.dp
+                            ) {
+                                NavigationBarItem(
+                                    icon = { 
+                                        Icon(
+                                            if (currentScreen == Screen.Photos) Icons.Filled.Image else Icons.Outlined.Image, 
+                                            contentDescription = "Photos"
+                                        ) 
+                                    },
+                                    label = { Text("Photos") },
+                                    selected = currentScreen == Screen.Photos,
+                                    onClick = { currentScreen = Screen.Photos }
+                                )
+                                NavigationBarItem(
+                                    icon = { 
+                                        Icon(
+                                            if (currentScreen == Screen.Search) Icons.Filled.Search else Icons.Outlined.Search, 
+                                            contentDescription = "Search"
+                                        ) 
+                                    },
+                                    label = { Text("Search") },
+                                    selected = currentScreen == Screen.Search,
+                                    onClick = { currentScreen = Screen.Search }
+                                )
+                                NavigationBarItem(
+                                    icon = { 
+                                        Icon(
+                                            if (currentScreen == Screen.Library) Icons.Filled.PhotoLibrary else Icons.Outlined.PhotoLibrary, 
+                                            contentDescription = "Library"
+                                        ) 
+                                    },
+                                    label = { Text("Library") },
+                                    selected = currentScreen == Screen.Library,
+                                    onClick = { currentScreen = Screen.Library }
+                                )
+                            }
+                        }
+                    }
+                ) { innerPadding ->
+                    Box(modifier = Modifier.padding(innerPadding)) {
+                        when (currentScreen) {
+                            Screen.Photos -> MainScreen(
+                                onNavigateToTools = { currentScreen = Screen.Library }, // Redirect to Library
+                                onDeleteRequested = { items -> launchDelete(items) }
+                            )
+                            Screen.Search -> ToolsScreen( // Reusing ToolsScreen as Search for now, will refactor
+                                onNavigateBack = { currentScreen = Screen.Photos },
+                                onNavigateToCollages = { currentScreen = Screen.Collages },
+                                onDeleteItems = { items -> launchDelete(items) },
+                                isSearchMode = true // New parameter to force search mode
+                            )
+                            Screen.Library -> ToolsScreen( // Reusing ToolsScreen as Library
+                                onNavigateBack = { currentScreen = Screen.Photos },
+                                onNavigateToCollages = { currentScreen = Screen.Collages },
+                                onDeleteItems = { items -> launchDelete(items) },
+                                isSearchMode = false
+                            )
+                            Screen.Collages -> CollageScreen(
+                                onNavigateBack = { currentScreen = Screen.Library }
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
+fun MainScreen(
+    viewModel: MainViewModel = hiltViewModel(),
+    onNavigateToTools: () -> Unit,
+    onDeleteRequested: (List<com.example.photosync.data.local.MediaItemEntity>) -> Unit
+) {
     val uiState by viewModel.uiState.collectAsState()
+    
     val context = LocalContext.current
     var showProfileDialog by remember { mutableStateOf(false) }
+    var viewingMediaItem by remember { mutableStateOf<com.example.photosync.data.local.MediaItemEntity?>(null) }
     
     // Lottie Animation State
     val composition by rememberLottieComposition(LottieCompositionSpec.RawRes(R.raw.success_animation))
@@ -120,9 +249,23 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
         }
     }
 
+    // Auto-launch sign-in when ViewModel requests re-auth (consume once)
+    LaunchedEffect(key1 = uiState.triggerSignIn) {
+        if (uiState.triggerSignIn) {
+            try {
+                val intent = viewModel.getSignInIntent()
+                launcher.launch(intent)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                viewModel.clearTriggerSignIn()
+            }
+        }
+    }
+
     // Request permissions on launch
     LaunchedEffect(Unit) {
-        val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val permissionsToRequest = if (AndroidBuild.VERSION.SDK_INT >= AndroidBuild.VERSION_CODES.TIRAMISU) {
             arrayOf(
                 Manifest.permission.READ_MEDIA_IMAGES,
                 Manifest.permission.READ_MEDIA_VIDEO,
@@ -138,12 +281,18 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
 
         if (!allPermissionsGranted) {
             permissionLauncher.launch(permissionsToRequest)
+        } else {
+            // Permissions already granted, start sync
+            viewModel.startSyncProcess()
         }
     }
 
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            TopAppBar(
+            LargeTopAppBar(
                 title = {
                     Column {
                         Text("PhotoSync", style = MaterialTheme.typography.headlineMedium)
@@ -156,6 +305,7 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
                         }
                     }
                 },
+                scrollBehavior = scrollBehavior,
                 actions = {
                     if (uiState.isSignedIn) {
                         // Auto Sync Switch
@@ -194,8 +344,9 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
+                colors = TopAppBarDefaults.largeTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
                     titleContentColor = MaterialTheme.colorScheme.onSurface,
                     actionIconContentColor = MaterialTheme.colorScheme.onSurface
                 )
@@ -303,16 +454,56 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(uiState.mediaItems, key = { it.id }) { item ->
-                        MediaItemCard(item) {
-                            try {
-                                val intent = Intent(Intent.ACTION_VIEW).apply {
-                                    setDataAndType(Uri.parse(item.id), item.mimeType)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    items(
+                        items = uiState.mediaItems,
+                        span = { item ->
+                            when (item) {
+                                is MediaUiItem.Header -> GridItemSpan(maxLineSpan)
+                                is MediaUiItem.Media -> GridItemSpan(1)
+                            }
+                        },
+                        key = { item ->
+                            when (item) {
+                                is MediaUiItem.Header -> item.title
+                                is MediaUiItem.Media -> item.item.id
+                            }
+                        }
+                    ) { item ->
+                        when (item) {
+                            is MediaUiItem.Header -> {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = item.title,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onBackground,
+                                        modifier = Modifier.weight(1f)
+                                    )
                                 }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                Toast.makeText(context, "Cannot open file", Toast.LENGTH_SHORT).show()
+                            }
+                            is MediaUiItem.Media -> {
+                                MediaItemCard(
+                                    item = item.item,
+                                    onClick = {
+                                        if (item.item.isLocal) {
+                                            try {
+                                                val intent = Intent(Intent.ACTION_VIEW).apply {
+                                                    setDataAndType(Uri.parse(item.item.id), item.item.mimeType)
+                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                }
+                                                context.startActivity(intent)
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Cannot open file", Toast.LENGTH_SHORT).show()
+                                            }
+                                        } else {
+                                            viewingMediaItem = item.item
+                                        }
+                                    }
+                                )
                             }
                         }
                     }
@@ -324,8 +515,94 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
     if (showProfileDialog) {
         AlertDialog(
             onDismissRequest = { showProfileDialog = false },
-            title = { Text("Account") },
-            text = { Text("Signed in as: ${uiState.userEmail}") },
+            title = { Text("Settings") },
+            text = {
+                Column {
+                    Text("Signed in as: ${uiState.userEmail}", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    // Wifi Only Switch
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.toggleWifiOnly(!uiState.isWifiOnly) }
+                            .padding(vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = "Sync only on Wi-Fi",
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = uiState.isWifiOnly,
+                            onCheckedChange = null // Handled by Row clickable
+                        )
+                    }
+                    
+                    Divider(modifier = Modifier.padding(vertical = 8.dp))
+                    
+                    // Free up space
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { 
+                                viewModel.prepareFreeUpSpace { items ->
+                                    if (items.isNotEmpty()) {
+                                        onDeleteRequested(items)
+                                    } else {
+                                        Toast.makeText(context, "No items to free up", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                showProfileDialog = false
+                            }
+                            .padding(vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column {
+                            Text(
+                                text = "Free up space",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "Remove original photos & videos from device that are already backed up",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+
+                    Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+                    // Tools & Utilities
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showProfileDialog = false
+                                onNavigateToTools()
+                            }
+                            .padding(vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Filled.Settings, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column {
+                            Text(
+                                text = "Tools & Utilities",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "Duplicate finder, Smart optimize, and more",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+                }
+            },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.signOut()
@@ -368,75 +645,61 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
             }
         }
     }
+    if (viewingMediaItem != null) {
+        PhotoViewer(item = viewingMediaItem!!, onDismiss = { viewingMediaItem = null })
+    }
 }
 
 @Composable
-fun MediaItemCard(item: com.example.photosync.data.local.MediaItemEntity, onClick: () -> Unit) {
-    val itemType = if (item.mimeType.startsWith("video/")) "Video" else "Photo"
-    val syncStatus = if (item.isSynced) "Synced" else "Not synced"
-    
-    Card(
-        modifier = Modifier
-            .aspectRatio(1f)
-            .clickable(
-                onClickLabel = "Open $itemType"
-            ) { onClick() }
-            .semantics {
-                contentDescription = "$itemType ${item.fileName}, $syncStatus"
-            },
-        shape = MaterialTheme.shapes.medium,
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+fun PhotoViewer(item: com.example.photosync.data.local.MediaItemEntity, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            // Smart Restore Logic: Load thumbnail first, then full
+            // Use a decent preview size (w640) for the placeholder to avoid too much blur
+            val highResUrl = if (item.remoteUrl != null) "${item.remoteUrl}=d" else item.id
+            val lowResUrl = if (item.remoteUrl != null) "${item.remoteUrl}=w640-h640" else null
+            
+            // 1. Low Res (Thumbnail) - Only if remote
+            if (lowResUrl != null) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(lowResUrl)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                    // Removed alpha to show full brightness placeholder
+                )
+            }
+
+            // 2. High Res (Full) - Fades in on top
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
-                    .data(item.id)
+                    .data(highResUrl)
                     .crossfade(true)
                     .build(),
-                contentDescription = null, // Handled by parent semantics
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
             )
-
-            // Sync Status Overlay
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(4.dp)
-                    .background(
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-                        shape = MaterialTheme.shapes.small
-                    )
-                    .padding(4.dp)
-            ) {
-                if (item.isSynced) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Synced",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.CloudUpload,
-                        contentDescription = "Not Synced",
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-            }
             
-            // Video Indicator
-            if (item.mimeType.startsWith("video/")) {
-                 Icon(
-                    imageVector = Icons.Default.PlayCircle,
-                    contentDescription = "Video",
-                    tint = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(32.dp)
-                        .background(Color.Black.copy(alpha = 0.3f), shape = MaterialTheme.shapes.extraLarge)
-                )
+            // Close button
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(16.dp)
+                    .background(Color.Black.copy(alpha = 0.5f), shape = androidx.compose.foundation.shape.CircleShape)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
             }
         }
     }

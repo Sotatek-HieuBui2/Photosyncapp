@@ -51,6 +51,27 @@ class TokenManager @Inject constructor(
         settingsPrefs.edit().clear().apply()
     }
 
+    fun saveDiagnostic(key: String, value: String) {
+        val sanitized = try {
+            // Try to parse JSON and redact well-known sensitive fields
+            val obj = org.json.JSONObject(value)
+            val sensitive = listOf("access_token", "id_token", "refresh_token")
+            for (s in sensitive) {
+                if (obj.has(s)) obj.put(s, "<redacted>")
+            }
+            obj.toString()
+        } catch (e: Exception) {
+            // Not JSON or parsing failed — store a truncated version to avoid leaking long tokens
+            if (value.length > 2000) value.substring(0, 2000) else value
+        }
+
+        settingsPrefs.edit().putString("diag_" + key, sanitized).apply()
+    }
+
+    fun getDiagnostic(key: String): String? {
+        return settingsPrefs.getString("diag_" + key, null)
+    }
+
     fun saveAutoSyncState(isEnabled: Boolean) {
         settingsPrefs.edit().putBoolean("auto_sync_enabled", isEnabled).apply()
     }
@@ -59,11 +80,28 @@ class TokenManager @Inject constructor(
         return settingsPrefs.getBoolean("auto_sync_enabled", false)
     }
 
+    fun saveWifiOnly(isEnabled: Boolean) {
+        settingsPrefs.edit().putBoolean("wifi_only", isEnabled).apply()
+    }
+
+    fun isWifiOnly(): Boolean {
+        return settingsPrefs.getBoolean("wifi_only", true) // Default to true for safety
+    }
+
     fun saveLastScanTime(timestamp: Long) {
         settingsPrefs.edit().putLong("last_scan_time", timestamp).apply()
     }
 
     fun getLastScanTime(): Long {
         return settingsPrefs.getLong("last_scan_time", 0L)
+    }
+
+    // Cloud sync feature flag (user can disable cloud sync entirely)
+    fun saveCloudSyncEnabled(isEnabled: Boolean) {
+        settingsPrefs.edit().putBoolean("cloud_sync_enabled", isEnabled).apply()
+    }
+
+    fun isCloudSyncEnabled(): Boolean {
+        return settingsPrefs.getBoolean("cloud_sync_enabled", false)
     }
 }

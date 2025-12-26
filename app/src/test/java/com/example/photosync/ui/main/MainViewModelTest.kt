@@ -48,10 +48,10 @@ class MainViewModelTest {
     @MockK
     lateinit var authManager: AuthManager
 
-    @MockK
+    @MockK(relaxed = true)
     lateinit var tokenManager: TokenManager
 
-    @MockK
+    @MockK(relaxed = true)
     lateinit var mediaRepository: MediaRepository
 
     @MockK
@@ -73,9 +73,10 @@ class MainViewModelTest {
         // Default mocks
         every { tokenManager.getEmail() } returns null
         every { tokenManager.getAccessToken() } returns null
+        every { tokenManager.isCloudSyncEnabled() } returns true
         every { tokenManager.isAutoSyncEnabled() } returns false
+        every { tokenManager.isWifiOnly() } returns true
         every { mediaRepository.allMediaItems } returns flowOf(emptyList())
-        coEvery { mediaRepository.scanLocalMedia() } returns Unit
         
         // WorkManager mocks
         every { workManager.enqueue(any<OneTimeWorkRequest>()) } returns mockk<Operation>()
@@ -129,6 +130,7 @@ class MainViewModelTest {
         createViewModel()
         val account = mockk<GoogleSignInAccount>()
         every { account.email } returns "test@example.com"
+        every { authManager.hasPermissions(account) } returns true
         coEvery { authManager.getAccessToken(account) } returns "new_token"
         every { tokenManager.saveAccessToken("new_token") } returns Unit
         every { tokenManager.saveEmail("test@example.com") } returns Unit
@@ -166,7 +168,9 @@ class MainViewModelTest {
         createViewModel()
         val account = mockk<GoogleSignInAccount>()
         every { account.email } returns "test@example.com"
+        every { authManager.hasPermissions(account) } returns true
         coEvery { authManager.getAccessToken(account) } returns null
+        every { tokenManager.getDiagnostic("tokeninfo") } returns null
 
         // When
         viewModel.handleSignInResult(account)
@@ -191,7 +195,28 @@ class MainViewModelTest {
 
         // Then
         val state = viewModel.uiState.value
-        assertEquals(2, state.mediaItems.size)
-        assertEquals("img1.jpg", state.mediaItems[0].fileName)
+        // Grouping inserts a header per date, so expect header + media items
+        assertEquals(3, state.mediaItems.size)
+        val firstMedia = state.mediaItems[1]
+        assertTrue(firstMedia is MediaUiItem.Media)
+        val mediaItem = (firstMedia as MediaUiItem.Media).item
+        assertEquals("img1.jpg", mediaItem.fileName)
+    }
+
+    @Test
+    fun `startSyncProcess handles reauth required`() = runTest {
+        // Given
+        createViewModel()
+        // Directly invoke the public reauth handler to validate behavior without mocking suspend calls
+        viewModel.handleReAuthRequired()
+        advanceUntilIdle()
+
+        // Then: tokenManager.clear() should be invoked and triggerSignIn true
+        verify { tokenManager.clear() }
+        coVerify { authManager.signOut() }
+        val state = viewModel.uiState.value
+        println("DEBUG: uiState after reauth -> $state")
+        assertFalse(state.isSignedIn)
+        assertTrue(state.triggerSignIn)
     }
 }

@@ -24,6 +24,17 @@ class MyApplication : Application(), Configuration.Provider, ImageLoaderFactory 
             .components {
                 add(VideoFrameDecoder.Factory())
             }
+            .memoryCache {
+                coil.memory.MemoryCache.Builder(this)
+                    .maxSizePercent(0.25)
+                    .build()
+            }
+            .diskCache {
+                coil.disk.DiskCache.Builder()
+                    .directory(cacheDir.resolve("image_cache"))
+                    .maxSizePercent(0.02)
+                    .build()
+            }
             .crossfade(true)
             .build()
     }
