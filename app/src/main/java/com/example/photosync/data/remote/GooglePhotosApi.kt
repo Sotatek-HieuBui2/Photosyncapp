@@ -3,10 +3,20 @@ package com.example.photosync.data.remote
 import okhttp3.RequestBody
 import okhttp3.ResponseBody
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
+import retrofit2.http.Query
 
 interface GooglePhotosApi {
+
+    // Lấy danh sách media từ Google Photos
+    @GET("v1/mediaItems")
+    suspend fun listMediaItems(
+        @Header("Authorization") token: String,
+        @Query("pageSize") pageSize: Int = 100,
+        @Query("pageToken") pageToken: String? = null
+    ): ListMediaItemsResponse
 
     // Bước 1: Upload binary data để lấy uploadToken
     @POST("v1/uploads")
@@ -33,4 +43,22 @@ data class SimpleMediaItem(val uploadToken: String)
 data class BatchCreateResponse(val newMediaItemResults: List<MediaItemResult>)
 data class MediaItemResult(val uploadToken: String, val status: Status, val mediaItem: MediaItem?)
 data class Status(val message: String)
-data class MediaItem(val id: String, val productUrl: String)
+data class MediaItem(
+    val id: String, 
+    val productUrl: String,
+    val baseUrl: String? = null,
+    val mimeType: String? = null,
+    val filename: String? = null,
+    val mediaMetadata: MediaMetadata? = null
+)
+
+data class ListMediaItemsResponse(
+    val mediaItems: List<MediaItem>?,
+    val nextPageToken: String?
+)
+
+data class MediaMetadata(
+    val creationTime: String,
+    val width: String,
+    val height: String
+)

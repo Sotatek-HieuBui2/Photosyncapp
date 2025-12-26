@@ -53,6 +53,14 @@ class SyncWorker @AssistedInject constructor(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         Log.d(TAG, "Starting SyncWorker...")
         
+        // 0. Check authentication first
+        val token = tokenManager.getAccessToken()
+        if (token.isNullOrEmpty()) {
+            Log.w(TAG, "Access token is missing. Cannot sync.")
+            return@withContext Result.failure()
+        }
+        val accessToken = "Bearer $token"
+        
         // Scan for new media before syncing
         try {
             mediaRepository.scanLocalMedia()
@@ -78,14 +86,6 @@ class SyncWorker @AssistedInject constructor(
             if (unsyncedItems.isEmpty()) {
                 return@withContext Result.success()
             }
-
-            // 2. Lấy Access Token từ TokenManager
-            val token = tokenManager.getAccessToken()
-            if (token.isNullOrEmpty()) {
-                Log.e(TAG, "Access token is missing.")
-                return@withContext Result.failure()
-            }
-            val accessToken = "Bearer $token"
 
             var syncedCount = 0
             val startTime = System.currentTimeMillis()
@@ -141,6 +141,7 @@ class SyncWorker @AssistedInject constructor(
 
                 val newMediaItems = mutableListOf<NewMediaItem>()
                 val successfulItems = mutableListOf<MediaItemEntity>()
+                val failedOrSkippedItems = mutableListOf<MediaItemEntity>()
 
                 // 1. Upload bytes for each item in chunk
                 for (item in chunk) {
@@ -150,6 +151,20 @@ class SyncWorker @AssistedInject constructor(
                     
                     val contentUri = Uri.parse(item.id)
                     
+                    // Check if file exists/is accessible
+                    try {
+                        applicationContext.contentResolver.openInputStream(contentUri)?.close() ?: run {
+                            Log.w(TAG, "File not found or inaccessible: $contentUri. Marking as skipped.")
+                            // Mark as synced (or handle differently) to prevent infinite retry loop
+                            failedOrSkippedItems.add(item.copy(isSynced = true, lastSyncedAt = System.currentTimeMillis()))
+                            return@run
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error checking file existence: $contentUri", e)
+                        failedOrSkippedItems.add(item.copy(isSynced = true, lastSyncedAt = System.currentTimeMillis()))
+                        continue
+                    }
+
                     // Sử dụng ContentResolver để đọc file thay vì File path trực tiếp (Scoped Storage)
                     val requestBody = try {
                         createRequestBodyFromUri(applicationContext, contentUri, item.mimeType) { bytesWritten ->
@@ -188,6 +203,11 @@ class SyncWorker @AssistedInject constructor(
                     val simpleMediaItem = SimpleMediaItem(uploadToken)
                     newMediaItems.add(NewMediaItem(description = "Uploaded via PhotoSync", simpleMediaItem = simpleMediaItem))
                     successfulItems.add(item)
+                }
+                
+                // Update skipped items in DB so they don't block future syncs
+                if (failedOrSkippedItems.isNotEmpty()) {
+                    database.mediaDao().updateAll(failedOrSkippedItems)
                 }
 
                 // 5. Batch create media items
@@ -233,7 +253,10 @@ class SyncWorker @AssistedInject constructor(
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "SyncWorker failed with exception", e)
-            Result.retry()
+            // Don't retry blindly on generic exceptions to avoid infinite loops.
+            // Only retry if it's clearly a transient network issue, but for now, let's return failure/success
+            // so the user can manually retry.
+            Result.failure()
         }
     }
 

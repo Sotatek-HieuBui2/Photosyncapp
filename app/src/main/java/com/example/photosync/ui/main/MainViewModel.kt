@@ -20,6 +20,15 @@ import javax.inject.Inject
 
 import androidx.work.WorkInfo
 import java.util.UUID
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import com.example.photosync.data.local.MediaItemEntity
+
+sealed class MediaUiItem {
+    data class Header(val title: String) : MediaUiItem()
+    data class Media(val item: MediaItemEntity) : MediaUiItem()
+}
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
@@ -51,8 +60,15 @@ class MainViewModel @Inject constructor(
 
     private fun checkAutoSyncStatus() {
         val isEnabled = tokenManager.isAutoSyncEnabled()
-        _uiState.value = _uiState.value.copy(isAutoSyncEnabled = isEnabled)
-        if (isEnabled) {
+        val isWifiOnly = tokenManager.isWifiOnly()
+        _uiState.value = _uiState.value.copy(
+            isAutoSyncEnabled = isEnabled,
+            isWifiOnly = isWifiOnly
+        )
+        
+        // Only setup periodic sync if enabled AND user is signed in
+        val token = tokenManager.getAccessToken()
+        if (isEnabled && !token.isNullOrEmpty() && tokenManager.isCloudSyncEnabled()) {
             setupPeriodicSync()
         }
     }
@@ -60,9 +76,60 @@ class MainViewModel @Inject constructor(
     private fun observeMediaItems() {
         viewModelScope.launch {
             mediaRepository.allMediaItems.collect { items ->
-                _uiState.value = _uiState.value.copy(mediaItems = items)
+                val groupedItems = groupMediaItems(items)
+                _uiState.value = _uiState.value.copy(mediaItems = groupedItems)
             }
         }
+    }
+
+    fun prepareFreeUpSpace(onResult: (List<MediaItemEntity>) -> Unit) {
+        viewModelScope.launch {
+            val items = mediaRepository.getSyncedLocalItems()
+            onResult(items)
+        }
+    }
+
+    fun handleFreeUpSpaceSuccess(deletedIds: List<String>) {
+        viewModelScope.launch {
+            deletedIds.forEach { id ->
+                mediaRepository.updateLocalStatus(id, false)
+            }
+        }
+    }
+
+    private fun groupMediaItems(items: List<MediaItemEntity>): List<MediaUiItem> {
+        if (items.isEmpty()) return emptyList()
+
+        val sortedItems = items.sortedByDescending { it.dateAdded }
+        val grouped = sortedItems.groupBy { item ->
+            formatDate(item.dateAdded * 1000) // dateAdded is in seconds
+        }
+
+        val uiItems = mutableListOf<MediaUiItem>()
+        grouped.forEach { (date, mediaList) ->
+            uiItems.add(MediaUiItem.Header(date))
+            mediaList.forEach { media ->
+                uiItems.add(MediaUiItem.Media(media))
+            }
+        }
+        return uiItems
+    }
+
+    private fun formatDate(timestamp: Long): String {
+        val date = Date(timestamp)
+        val now = Date()
+        val oneDay = 24 * 60 * 60 * 1000L
+
+        return when {
+            isSameDay(date, now) -> "Today"
+            isSameDay(date, Date(now.time - oneDay)) -> "Yesterday"
+            else -> SimpleDateFormat("EEE, dd MMM yyyy", Locale.getDefault()).format(date)
+        }
+    }
+
+    private fun isSameDay(date1: Date, date2: Date): Boolean {
+        val fmt = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
+        return fmt.format(date1) == fmt.format(date2)
     }
 
     fun getSignInIntent(): Intent {
@@ -72,6 +139,21 @@ class MainViewModel @Inject constructor(
     fun handleSignInResult(account: GoogleSignInAccount) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true)
+            
+            if (!authManager.hasPermissions(account)) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = "Missing permissions. Please sign in again and grant all permissions."
+                )
+                return@launch
+            }
+
+            // Clear token cũ trước khi lấy mới để đảm bảo sạch sẽ
+            val oldToken = tokenManager.getAccessToken()
+            if (oldToken != null) {
+                authManager.clearToken(oldToken)
+            }
+
             val token = authManager.getAccessToken(account)
             if (token != null) {
                 tokenManager.saveAccessToken(token)
@@ -83,13 +165,24 @@ class MainViewModel @Inject constructor(
                     isLoading = false,
                     error = null
                 )
-                
-                // Sau khi login thành công, quét media và sync
-                startSyncProcess()
+
+                // Sau khi login thành công, quét media và sync only if cloud sync feature is enabled
+                if (tokenManager.isCloudSyncEnabled()) {
+                    startSyncProcess()
+                } else {
+                    _uiState.value = _uiState.value.copy(statusMessage = "Cloud sync disabled")
+                }
             } else {
+                // Try to surface diagnostic tokeninfo saved by AuthManager
+                val diag = tokenManager.getDiagnostic("tokeninfo")
+                val errMsg = if (!diag.isNullOrEmpty()) {
+                    "Failed to retrieve access token. tokeninfo: $diag"
+                } else {
+                    "Failed to retrieve access token"
+                }
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    error = "Failed to retrieve access token"
+                    error = errMsg
                 )
             }
         }
@@ -103,6 +196,10 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(error = null)
     }
 
+    fun clearTriggerSignIn() {
+        _uiState.value = _uiState.value.copy(triggerSignIn = false)
+    }
+
     fun startSyncProcess() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Scanning media...")
@@ -110,9 +207,41 @@ class MainViewModel @Inject constructor(
             // 1. Quét file local
             mediaRepository.scanLocalMedia()
             
-            // 2. Kích hoạt Worker
+            // 2. Sync cloud media info
+            try {
+                _uiState.value = _uiState.value.copy(statusMessage = "Fetching cloud library...")
+                mediaRepository.syncCloudMedia()
+            } catch (e: Exception) {
+                e.printStackTrace()
+
+                // Handle re-auth required separately
+                if (e is com.example.photosync.auth.ReAuthRequiredException || (e.message?.contains("REAUTH_REQUIRED") == true)) {
+                    handleReAuthRequired()
+                    return@launch
+                }
+
+                _uiState.value = _uiState.value.copy(
+                    error = "Cloud sync failed: ${e.message}. Try signing out and in again."
+                )
+            }
+            
+            // 3. Kích hoạt Worker
             _uiState.value = _uiState.value.copy(statusMessage = "Starting background sync...")
-            val syncRequest = OneTimeWorkRequestBuilder<SyncWorker>().build()
+            
+            val networkType = if (_uiState.value.isWifiOnly) {
+                androidx.work.NetworkType.UNMETERED
+            } else {
+                androidx.work.NetworkType.CONNECTED
+            }
+            
+            val constraints = androidx.work.Constraints.Builder()
+                .setRequiredNetworkType(networkType)
+                .build()
+                
+            val syncRequest = OneTimeWorkRequestBuilder<SyncWorker>()
+                .setConstraints(constraints)
+                .build()
+                
             WorkManager.getInstance(application).enqueue(syncRequest)
             
             observeSyncProgress(syncRequest.id)
@@ -156,6 +285,10 @@ class MainViewModel @Inject constructor(
     
     fun signOut() {
         viewModelScope.launch {
+            val token = tokenManager.getAccessToken()
+            if (token != null) {
+                authManager.clearToken(token)
+            }
             authManager.signOut()
             tokenManager.clear()
             _uiState.value = _uiState.value.copy(
@@ -163,6 +296,26 @@ class MainViewModel @Inject constructor(
                 userEmail = null,
                 statusMessage = null,
                 error = null
+            )
+        }
+    }
+
+    // Public handler to perform re-auth flow: clear tokens, sign out and prompt UI to request sign-in.
+    fun handleReAuthRequired() {
+        viewModelScope.launch {
+            tokenManager.clear()
+            try {
+                authManager.signOut()
+            } catch (ex: Exception) {
+                ex.printStackTrace()
+            }
+
+            _uiState.value = _uiState.value.copy(
+                isSignedIn = false,
+                userEmail = null,
+                isLoading = false,
+                error = "Authentication required or insufficient permissions. Please sign in and grant Photos scopes.",
+                triggerSignIn = true
             )
         }
     }
@@ -180,9 +333,27 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun toggleWifiOnly(enabled: Boolean) {
+        viewModelScope.launch {
+            tokenManager.saveWifiOnly(enabled)
+            _uiState.value = _uiState.value.copy(isWifiOnly = enabled)
+            
+            // If auto sync is enabled, we need to update the periodic work with new constraints
+            if (_uiState.value.isAutoSyncEnabled) {
+                setupPeriodicSync()
+            }
+        }
+    }
+
     private fun setupPeriodicSync() {
+        val networkType = if (_uiState.value.isWifiOnly) {
+            androidx.work.NetworkType.UNMETERED
+        } else {
+            androidx.work.NetworkType.CONNECTED
+        }
+
         val constraints = androidx.work.Constraints.Builder()
-            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+            .setRequiredNetworkType(networkType)
             .build()
 
         val periodicWork = androidx.work.PeriodicWorkRequestBuilder<SyncWorker>(
@@ -211,5 +382,7 @@ data class MainUiState(
     val error: String? = null,
     val progress: Float = 0f,
     val isAutoSyncEnabled: Boolean = false,
-    val mediaItems: List<com.example.photosync.data.local.MediaItemEntity> = emptyList()
+    val isWifiOnly: Boolean = true,
+    val mediaItems: List<MediaUiItem> = emptyList(),
+    val triggerSignIn: Boolean = false
 )

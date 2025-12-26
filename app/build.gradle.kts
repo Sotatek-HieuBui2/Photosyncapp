@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
     id("com.google.dagger.hilt.android")
-    id("com.google.gms.google-services")
+    // id("com.google.gms.google-services") // Đã xóa plugin Firebase
 }
 
 android {
@@ -95,7 +95,11 @@ dependencies {
     // 7. Lottie (Animations)
     implementation("com.airbnb.android:lottie-compose:6.3.0")
 
+    // 8. ML Kit (Image Labeling)
+    implementation("com.google.mlkit:image-labeling:17.0.7")
+
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20230227")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
     testImplementation("io.mockk:mockk:1.13.8")
     testImplementation("io.mockk:mockk-agent-jvm:1.13.8")
