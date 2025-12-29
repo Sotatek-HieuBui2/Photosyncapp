@@ -2,6 +2,7 @@ package com.example.photosync.data.repository
 
 import android.content.ContentUris
 import android.content.Context
+import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
 import com.example.photosync.data.local.MediaDao
@@ -46,27 +47,58 @@ class MediaRepository @Inject constructor(
 
     suspend fun scanLocalMedia() = withContext(Dispatchers.IO) {
         val lastScanTime = tokenManager.getLastScanTime()
-        Log.d(TAG, "Starting scanLocalMedia... Last scan: $lastScanTime")
+        val dbCount = mediaDao.countItems()
+        val doFullScan = dbCount == 0 || lastScanTime == 0L
+        Log.d(TAG, "Starting scanLocalMedia... Last scan: $lastScanTime, DB count: $dbCount, fullScan=$doFullScan")
         
-        val projection = arrayOf(
-            MediaStore.MediaColumns._ID,
-            MediaStore.MediaColumns.DISPLAY_NAME,
-            MediaStore.MediaColumns.DATA,
-            MediaStore.MediaColumns.MIME_TYPE,
-            MediaStore.MediaColumns.SIZE,
-            MediaStore.MediaColumns.DATE_ADDED
-        )
+        // On Android Q+ (API 29+), DATA column is deprecated and may be empty.
+        // Use RELATIVE_PATH instead for display purposes.
+        val projection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            arrayOf(
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.RELATIVE_PATH,
+                MediaStore.MediaColumns.MIME_TYPE,
+                MediaStore.MediaColumns.SIZE,
+                MediaStore.MediaColumns.DATE_ADDED
+            )
+        } else {
+            arrayOf(
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.DATA,
+                MediaStore.MediaColumns.MIME_TYPE,
+                MediaStore.MediaColumns.SIZE,
+                MediaStore.MediaColumns.DATE_ADDED
+            )
+        }
 
         // Scan Images
-        scanMediaStore(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, lastScanTime)
+        if (doFullScan) {
+            scanMediaStore(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, null)
+        } else {
+            scanMediaStore(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, lastScanTime)
+        }
         
         // Scan Videos
-        scanMediaStore(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, lastScanTime)
-        
+        if (doFullScan) {
+            scanMediaStore(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, null)
+        } else {
+            scanMediaStore(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, lastScanTime)
+        }
+
         // Update last scan time to now (in seconds)
         tokenManager.saveLastScanTime(System.currentTimeMillis() / 1000)
         Log.d(TAG, "scanLocalMedia completed.")
         Unit
+    }
+
+    suspend fun forceRescanLocalMedia() = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Force rescanning all local media...")
+        // Reset the scan time so a full scan is triggered
+        tokenManager.resetScanState()
+        // Perform scan (dbCount check will trigger full scan since lastScanTime=0)
+        scanLocalMedia()
     }
 
     suspend fun getSyncedLocalItems(): List<MediaItemEntity> {
@@ -94,9 +126,17 @@ class MediaRepository @Inject constructor(
         mediaDao.deleteById(id)
     }
 
-    private suspend fun scanMediaStore(uri: android.net.Uri, projection: Array<String>, lastScanTime: Long) {
-        val selection = "${MediaStore.MediaColumns.DATE_ADDED} > ?"
-        val selectionArgs = arrayOf(lastScanTime.toString())
+    private suspend fun scanMediaStore(uri: android.net.Uri, projection: Array<String>, lastScanTime: Long?) {
+        val selection: String?
+        val selectionArgs: Array<String>?
+
+        if (lastScanTime == null) {
+            selection = null
+            selectionArgs = null
+        } else {
+            selection = "${MediaStore.MediaColumns.DATE_ADDED} > ?"
+            selectionArgs = arrayOf(lastScanTime.toString())
+        }
 
         try {
             context.contentResolver.query(
@@ -106,9 +146,16 @@ class MediaRepository @Inject constructor(
                 selectionArgs,
                 "${MediaStore.MediaColumns.DATE_ADDED} DESC"
             )?.use { cursor ->
+                Log.d(TAG, "Query $uri returned ${cursor.count} items (selection=$selection, args=${selectionArgs?.joinToString()})")
+                
                 val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
                 val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-                val pathColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
+                // On Android Q+, use RELATIVE_PATH; on older versions, use DATA
+                val pathColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                } else {
+                    cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                }
                 val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
                 val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
                 val dateAddedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
@@ -118,7 +165,8 @@ class MediaRepository @Inject constructor(
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idColumn)
                     val name = cursor.getString(nameColumn)
-                    val path = cursor.getString(pathColumn)
+                    // Safely read path/relative path — may be null or column may not exist
+                    val path = if (pathColumn >= 0) cursor.getString(pathColumn) else null
                     val mime = cursor.getString(mimeColumn)
                     val size = cursor.getLong(sizeColumn)
                     val dateAdded = cursor.getLong(dateAddedColumn)
@@ -126,6 +174,8 @@ class MediaRepository @Inject constructor(
                     val contentUri = ContentUris.withAppendedId(uri, id)
 
                     // Chỉ thêm vào DB nếu chưa tồn tại (Room OnConflictStrategy.IGNORE sẽ xử lý)
+                    // filePath stores relative path on Q+ or absolute path on older versions;
+                    // actual file access should use the content URI.
                     val entity = MediaItemEntity(
                         id = contentUri.toString(), // Dùng URI làm ID
                         fileName = name ?: "Unknown",
@@ -140,8 +190,10 @@ class MediaRepository @Inject constructor(
                 
                 if (newItems.isNotEmpty()) {
                     mediaDao.insertAll(newItems)
+                    val dbCountAfter = mediaDao.countItems()
+                    Log.d(TAG, "Inserted ${newItems.size} items. DB count now: $dbCountAfter")
                 }
-                Log.d(TAG, "Scanned $count new items from $uri")
+                Log.d(TAG, "Scanned $count items from $uri")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error scanning media: $uri", e)

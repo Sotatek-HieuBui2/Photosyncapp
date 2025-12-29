@@ -96,6 +96,10 @@ class TokenManager @Inject constructor(
         return settingsPrefs.getLong("last_scan_time", 0L)
     }
 
+    fun resetScanState() {
+        settingsPrefs.edit().putLong("last_scan_time", 0L).apply()
+    }
+
     // Cloud sync feature flag (user can disable cloud sync entirely)
     fun saveCloudSyncEnabled(isEnabled: Boolean) {
         settingsPrefs.edit().putBoolean("cloud_sync_enabled", isEnabled).apply()

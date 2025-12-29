@@ -200,6 +200,14 @@ class MainViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(triggerSignIn = false)
     }
 
+    fun forceRescan() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Force rescanning all media...")
+            mediaRepository.forceRescanLocalMedia()
+            _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = "Rescan completed!")
+        }
+    }
+
     fun startSyncProcess() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Scanning media...")

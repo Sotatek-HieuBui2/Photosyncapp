@@ -79,11 +79,12 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
 import com.example.photosync.ui.tools.ToolsScreen
 import com.example.photosync.ui.tools.CollageScreen
+import com.example.photosync.ui.debug.DebugScreen
 import android.provider.MediaStore
 import androidx.activity.result.IntentSenderRequest
 
 enum class Screen {
-    Photos, Search, Library, Collages
+    Photos, Search, Library, Collages, Debug
 }
 
 @AndroidEntryPoint
@@ -171,7 +172,8 @@ class MainActivity : ComponentActivity() {
                         when (currentScreen) {
                             Screen.Photos -> MainScreen(
                                 onNavigateToTools = { currentScreen = Screen.Library }, // Redirect to Library
-                                onDeleteRequested = { items -> launchDelete(items) }
+                                onDeleteRequested = { items -> launchDelete(items) },
+                                onNavigateToDebug = { currentScreen = Screen.Debug }
                             )
                             Screen.Search -> ToolsScreen( // Reusing ToolsScreen as Search for now, will refactor
                                 onNavigateBack = { currentScreen = Screen.Photos },
@@ -188,6 +190,9 @@ class MainActivity : ComponentActivity() {
                             Screen.Collages -> CollageScreen(
                                 onNavigateBack = { currentScreen = Screen.Library }
                             )
+                            Screen.Debug -> DebugScreen(
+                                onNavigateBack = { currentScreen = Screen.Photos }
+                            )
                         }
                     }
                 }
@@ -201,7 +206,8 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(
     viewModel: MainViewModel = hiltViewModel(),
     onNavigateToTools: () -> Unit,
-    onDeleteRequested: (List<com.example.photosync.data.local.MediaItemEntity>) -> Unit
+    onDeleteRequested: (List<com.example.photosync.data.local.MediaItemEntity>) -> Unit,
+    onNavigateToDebug: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
     
@@ -576,6 +582,34 @@ fun MainScreen(
 
                     Divider(modifier = Modifier.padding(vertical = 8.dp))
 
+                    // Rescan Media
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                viewModel.forceRescan()
+                                showProfileDialog = false
+                            }
+                            .padding(vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Sync, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column {
+                            Text(
+                                text = "Rescan all media",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "Scan device for new or missing photos & videos",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+
+                    Divider(modifier = Modifier.padding(vertical = 8.dp))
+
                     // Tools & Utilities
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -596,6 +630,34 @@ fun MainScreen(
                             )
                             Text(
                                 text = "Duplicate finder, Smart optimize, and more",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+
+                    Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+                    // Debug Screen
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showProfileDialog = false
+                                onNavigateToDebug()
+                            }
+                            .padding(vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column {
+                            Text(
+                                text = "Debug Info",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "View scan status, DB stats, and troubleshoot",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             )

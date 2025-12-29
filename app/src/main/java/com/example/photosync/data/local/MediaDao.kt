@@ -15,6 +15,9 @@ interface MediaDao {
     @Query("SELECT * FROM media_items WHERE isSynced = 0")
     suspend fun getUnsyncedItems(): List<MediaItemEntity>
 
+    @Query("SELECT COUNT(*) FROM media_items")
+    suspend fun countItems(): Int
+
     @Query("SELECT * FROM media_items WHERE googlePhotosId = :googleId LIMIT 1")
     suspend fun getByGoogleId(googleId: String): MediaItemEntity?
 
