@@ -150,12 +150,6 @@ class MainViewModel @Inject constructor(
                 return@launch
             }
 
-            // Clear token cũ trước khi lấy mới để đảm bảo sạch sẽ
-            val oldToken = tokenManager.getAccessToken()
-            if (oldToken != null) {
-                authManager.clearToken(oldToken)
-            }
-
             val token = authManager.getAccessToken(account)
             if (token != null) {
                 tokenManager.saveAccessToken(token)
@@ -296,10 +290,6 @@ class MainViewModel @Inject constructor(
     
     fun signOut() {
         viewModelScope.launch {
-            val token = tokenManager.getAccessToken()
-            if (token != null) {
-                authManager.clearToken(token)
-            }
             authManager.signOut()
             tokenManager.clear()
             _uiState.value = _uiState.value.copy(

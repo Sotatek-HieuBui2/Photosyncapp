@@ -24,7 +24,11 @@ object DatabaseModule {
             AppDatabase::class.java,
             "photo_sync_db"
         )
-        .addMigrations(DatabaseMigrations.MIGRATION_3_4)
+        .addMigrations(
+            DatabaseMigrations.MIGRATION_1_3,
+            DatabaseMigrations.MIGRATION_2_3,
+            DatabaseMigrations.MIGRATION_3_4
+        )
         .build()
     }
 

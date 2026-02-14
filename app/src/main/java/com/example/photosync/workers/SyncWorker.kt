@@ -35,6 +35,7 @@ import okhttp3.RequestBody
 import okio.BufferedSink
 import okio.source
 import retrofit2.HttpException
+import java.io.FileNotFoundException
 import java.io.IOException
 import kotlin.math.roundToInt
 
@@ -89,6 +90,7 @@ class SyncWorker @AssistedInject constructor(
             }
 
             var syncedCount = 0
+            var hasTransientReadFailure = false
             val startTime = System.currentTimeMillis()
             
             // Calculate total size for ETA
@@ -142,7 +144,7 @@ class SyncWorker @AssistedInject constructor(
 
                 val newMediaItems = mutableListOf<NewMediaItem>()
                 val successfulItems = mutableListOf<MediaItemEntity>()
-                val skippedOrDeletedIds = mutableListOf<String>()
+                val confirmedDeletedIds = mutableListOf<String>()
 
                 // 1. Upload bytes for each item in chunk
                 for (item in chunk) {
@@ -154,14 +156,27 @@ class SyncWorker @AssistedInject constructor(
                     
                     // Check if file exists/is accessible
                     try {
-                        applicationContext.contentResolver.openInputStream(contentUri)?.close() ?: run {
+                        val canRead = applicationContext.contentResolver.openInputStream(contentUri)?.use { true } ?: false
+                        if (!canRead) {
                             Log.w(TAG, "File not found or inaccessible: $contentUri. Marking as deleted locally.")
-                            skippedOrDeletedIds.add(item.id)
-                            return@run
+                            confirmedDeletedIds.add(item.id)
+                            continue
                         }
+                    } catch (e: FileNotFoundException) {
+                        Log.w(TAG, "File not found: $contentUri. Marking as deleted locally.", e)
+                        confirmedDeletedIds.add(item.id)
+                        continue
+                    } catch (e: SecurityException) {
+                        Log.w(TAG, "Security exception reading $contentUri. Will retry later.", e)
+                        hasTransientReadFailure = true
+                        continue
+                    } catch (e: IOException) {
+                        Log.w(TAG, "I/O exception reading $contentUri. Will retry later.", e)
+                        hasTransientReadFailure = true
+                        continue
                     } catch (e: Exception) {
-                        Log.w(TAG, "Error checking file existence: $contentUri", e)
-                        skippedOrDeletedIds.add(item.id)
+                        Log.w(TAG, "Unexpected error checking file existence: $contentUri. Will retry later.", e)
+                        hasTransientReadFailure = true
                         continue
                     }
 
@@ -206,8 +221,8 @@ class SyncWorker @AssistedInject constructor(
                 }
                 
                 // Reflect local deletions in DB without falsely marking items as synced.
-                if (skippedOrDeletedIds.isNotEmpty()) {
-                    mediaRepository.markAsDeletedLocally(skippedOrDeletedIds)
+                if (confirmedDeletedIds.isNotEmpty()) {
+                    mediaRepository.markAsDeletedLocally(confirmedDeletedIds)
                 }
 
                 // 5. Batch create media items
@@ -250,6 +265,12 @@ class SyncWorker @AssistedInject constructor(
             }
             
             progressJob.cancel()
+            if (hasTransientReadFailure) {
+                val remainingUnsynced = database.mediaDao().getUnsyncedItems().isNotEmpty()
+                if (remainingUnsynced) {
+                    return@withContext Result.retry()
+                }
+            }
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "SyncWorker failed with exception", e)

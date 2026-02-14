@@ -40,36 +40,45 @@ class MediaRepository @Inject constructor(
         }
 
         try {
-            val response = api.listMediaItems(token = "Bearer $token", pageSize = 100)
-            val remoteItems = response.mediaItems.orEmpty()
+            var pageToken: String? = null
+            var totalFetched = 0
 
-            if (remoteItems.isEmpty()) {
-                Log.d(TAG, "Cloud media fetch completed: no items returned.")
-                return@withContext
-            }
-
-            val now = System.currentTimeMillis()
-            val entities = remoteItems.map { media ->
-                val googleId = media.id
-                val createdAt = parseGoogleDate(media.mediaMetadata?.creationTime)
-
-                MediaItemEntity(
-                    id = "remote:$googleId",
-                    fileName = media.filename ?: "Cloud item $googleId",
-                    filePath = "",
-                    mimeType = media.mimeType ?: "image/jpeg",
-                    fileSize = 0L,
-                    dateAdded = createdAt,
-                    isSynced = true,
-                    isLocal = false,
-                    remoteUrl = media.baseUrl,
-                    googlePhotosId = googleId,
-                    lastSyncedAt = now
+            do {
+                val response = api.listMediaItems(
+                    token = "Bearer $token",
+                    pageSize = 100,
+                    pageToken = pageToken
                 )
-            }
+                val remoteItems = response.mediaItems.orEmpty()
+                if (remoteItems.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    val entities = remoteItems.map { media ->
+                        val googleId = media.id
+                        val createdAt = parseGoogleDate(media.mediaMetadata?.creationTime)
 
-            mediaDao.insertAll(entities)
-            Log.d(TAG, "Cloud media sync inserted/merged ${entities.size} items.")
+                        MediaItemEntity(
+                            id = "remote:$googleId",
+                            fileName = media.filename ?: "Cloud item $googleId",
+                            filePath = "",
+                            mimeType = media.mimeType ?: "image/jpeg",
+                            fileSize = 0L,
+                            dateAdded = createdAt,
+                            isSynced = true,
+                            isLocal = false,
+                            remoteUrl = media.baseUrl,
+                            googlePhotosId = googleId,
+                            lastSyncedAt = now
+                        )
+                    }
+
+                    mediaDao.insertAll(entities)
+                    totalFetched += entities.size
+                }
+
+                pageToken = response.nextPageToken
+            } while (!pageToken.isNullOrEmpty())
+
+            Log.d(TAG, "Cloud media sync inserted/merged $totalFetched items.")
         } catch (e: retrofit2.HttpException) {
             if (e.code() == 401 || e.code() == 403) {
                 throw com.example.photosync.auth.ReAuthRequiredException(

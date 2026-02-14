@@ -57,13 +57,9 @@ class AuthManager @Inject constructor(
     }
 
     suspend fun clearToken(token: String) = withContext(Dispatchers.IO) {
-        try {
-            // Fallback for current Play Services auth version: revoke account access.
-            val client = GoogleSignIn.getClient(context, gso)
-            Tasks.await(client.revokeAccess())
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        // AuthorizationClient token invalidation API is not available in current dependency set.
+        // Keep this as a no-op to avoid revoking account access during normal token refresh flow.
+        android.util.Log.d("AuthManager", "clearToken no-op for token prefix: ${token.take(6)}")
     }
 
     suspend fun getAccessToken(account: GoogleSignInAccount): String? = withContext(Dispatchers.IO) {
