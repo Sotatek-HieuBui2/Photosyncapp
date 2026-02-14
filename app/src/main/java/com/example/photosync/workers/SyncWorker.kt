@@ -34,6 +34,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody
 import okio.BufferedSink
 import okio.source
+import retrofit2.HttpException
 import java.io.IOException
 import kotlin.math.roundToInt
 
@@ -141,7 +142,7 @@ class SyncWorker @AssistedInject constructor(
 
                 val newMediaItems = mutableListOf<NewMediaItem>()
                 val successfulItems = mutableListOf<MediaItemEntity>()
-                val failedOrSkippedItems = mutableListOf<MediaItemEntity>()
+                val skippedOrDeletedIds = mutableListOf<String>()
 
                 // 1. Upload bytes for each item in chunk
                 for (item in chunk) {
@@ -154,14 +155,13 @@ class SyncWorker @AssistedInject constructor(
                     // Check if file exists/is accessible
                     try {
                         applicationContext.contentResolver.openInputStream(contentUri)?.close() ?: run {
-                            Log.w(TAG, "File not found or inaccessible: $contentUri. Marking as skipped.")
-                            // Mark as synced (or handle differently) to prevent infinite retry loop
-                            failedOrSkippedItems.add(item.copy(isSynced = true, lastSyncedAt = System.currentTimeMillis()))
+                            Log.w(TAG, "File not found or inaccessible: $contentUri. Marking as deleted locally.")
+                            skippedOrDeletedIds.add(item.id)
                             return@run
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "Error checking file existence: $contentUri", e)
-                        failedOrSkippedItems.add(item.copy(isSynced = true, lastSyncedAt = System.currentTimeMillis()))
+                        skippedOrDeletedIds.add(item.id)
                         continue
                     }
 
@@ -205,9 +205,9 @@ class SyncWorker @AssistedInject constructor(
                     successfulItems.add(item)
                 }
                 
-                // Update skipped items in DB so they don't block future syncs
-                if (failedOrSkippedItems.isNotEmpty()) {
-                    database.mediaDao().updateAll(failedOrSkippedItems)
+                // Reflect local deletions in DB without falsely marking items as synced.
+                if (skippedOrDeletedIds.isNotEmpty()) {
+                    mediaRepository.markAsDeletedLocally(skippedOrDeletedIds)
                 }
 
                 // 5. Batch create media items
@@ -253,10 +253,14 @@ class SyncWorker @AssistedInject constructor(
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "SyncWorker failed with exception", e)
-            // Don't retry blindly on generic exceptions to avoid infinite loops.
-            // Only retry if it's clearly a transient network issue, but for now, let's return failure/success
-            // so the user can manually retry.
-            Result.failure()
+
+            val shouldRetry = when (e) {
+                is IOException -> true
+                is HttpException -> e.code() == 408 || e.code() == 429 || e.code() >= 500
+                else -> false
+            }
+
+            if (shouldRetry) Result.retry() else Result.failure()
         }
     }
 

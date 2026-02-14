@@ -18,8 +18,14 @@ interface MediaDao {
     @Query("SELECT * FROM media_items WHERE googlePhotosId = :googleId LIMIT 1")
     suspend fun getByGoogleId(googleId: String): MediaItemEntity?
 
+    @Query("SELECT * FROM media_items WHERE id = :id LIMIT 1")
+    suspend fun getById(id: String): MediaItemEntity?
+
     @Query("SELECT * FROM media_items WHERE isSynced = 1 AND isLocal = 1")
     suspend fun getSyncedLocalItems(): List<MediaItemEntity>
+
+    @Query("SELECT * FROM media_items WHERE tags LIKE '%' || :query || '%' ORDER BY dateAdded DESC")
+    suspend fun searchByTags(query: String): List<MediaItemEntity>
 
     @Query("UPDATE media_items SET isLocal = :isLocal WHERE id = :id")
     suspend fun updateLocalStatus(id: String, isLocal: Boolean)

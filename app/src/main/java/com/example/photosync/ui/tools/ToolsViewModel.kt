@@ -8,6 +8,8 @@ import com.example.photosync.data.local.MediaItemEntity
 import com.example.photosync.data.repository.MediaRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,16 +17,15 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import javax.inject.Inject
 
+import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.label.ImageLabeling
 import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import android.net.Uri
 import java.io.IOException
 import java.security.MessageDigest
-import java.io.FileInputStream
 
 data class Moment(
     val date: String,
@@ -49,6 +50,7 @@ class ToolsViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(ToolsUiState())
     val uiState: StateFlow<ToolsUiState> = _uiState.asStateFlow()
+    private var searchJob: Job? = null
 
     fun scanForObjects() {
         viewModelScope.launch {
@@ -62,23 +64,18 @@ class ToolsViewModel @Inject constructor(
                 items.forEach { item ->
                     try {
                         val image = InputImage.fromFilePath(application, Uri.parse(item.id))
-                        labeler.process(image)
-                            .addOnSuccessListener { labels ->
-                                val tags = labels.joinToString(",") { it.text }
-                                if (tags.isNotEmpty()) {
-                                    viewModelScope.launch(Dispatchers.IO) {
-                                        mediaDao.updateTags(item.id, tags)
-                                    }
-                                }
-                            }
-                            .addOnFailureListener { e ->
-                                e.printStackTrace()
-                            }
+                        val labels = Tasks.await(labeler.process(image))
+                        val tags = labels.joinToString(",") { it.text }
+                        if (tags.isNotEmpty()) {
+                            mediaDao.updateTags(item.id, tags)
+                        }
                         processed++
                         if (processed % 10 == 0) {
                              _uiState.update { it.copy(message = "Scanning... $processed/${items.size}") }
                         }
                     } catch (e: IOException) {
+                        e.printStackTrace()
+                    } catch (e: Exception) {
                         e.printStackTrace()
                     }
                 }
@@ -89,10 +86,19 @@ class ToolsViewModel @Inject constructor(
     }
     
     fun searchByTag(query: String) {
-        viewModelScope.launch {
-             val allItems = repository.allMediaItems.first()
-             val results = allItems.filter { it.tags?.contains(query, ignoreCase = true) == true }
-             _uiState.update { it.copy(searchResults = results) }
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            delay(250)
+            val normalizedQuery = query.trim()
+            if (normalizedQuery.isEmpty()) {
+                _uiState.update { it.copy(searchResults = emptyList()) }
+                return@launch
+            }
+
+            val results = withContext(Dispatchers.IO) {
+                mediaDao.searchByTags(normalizedQuery)
+            }
+            _uiState.update { it.copy(searchResults = results) }
         }
     }
 

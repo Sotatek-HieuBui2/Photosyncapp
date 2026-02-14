@@ -3,6 +3,7 @@ package com.example.photosync.di
 import android.content.Context
 import androidx.room.Room
 import com.example.photosync.data.local.AppDatabase
+import com.example.photosync.data.local.DatabaseMigrations
 import com.example.photosync.data.local.MediaDao
 import dagger.Module
 import dagger.Provides
@@ -23,7 +24,7 @@ object DatabaseModule {
             AppDatabase::class.java,
             "photo_sync_db"
         )
-        .fallbackToDestructiveMigration()
+        .addMigrations(DatabaseMigrations.MIGRATION_3_4)
         .build()
     }
 

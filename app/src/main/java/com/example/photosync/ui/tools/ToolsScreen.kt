@@ -28,6 +28,9 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 
+private const val ENABLE_SMART_OPTIMIZE = false
+private const val ENABLE_BACKUP_VERIFICATION = false
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ToolsScreen(
@@ -129,7 +132,8 @@ fun ToolsScreen(
                         title = "Smart Optimize",
                         icon = Icons.Default.AutoFixHigh,
                         color = MaterialTheme.colorScheme.tertiaryContainer,
-                        onClick = { /* TODO */ }
+                        onClick = {},
+                        enabled = ENABLE_SMART_OPTIMIZE
                     )
                 }
 
@@ -147,7 +151,8 @@ fun ToolsScreen(
                         title = "Backup Verification",
                         icon = Icons.Default.VerifiedUser,
                         color = MaterialTheme.colorScheme.surfaceVariant,
-                        onClick = { /* TODO */ },
+                        onClick = {},
+                        enabled = ENABLE_BACKUP_VERIFICATION,
                         horizontal = true
                     )
                 }
@@ -220,11 +225,15 @@ fun ToolCard(
     icon: ImageVector,
     color: Color,
     onClick: () -> Unit,
+    enabled: Boolean = true,
     horizontal: Boolean = false
 ) {
     Card(
         onClick = onClick,
-        colors = CardDefaults.cardColors(containerColor = color),
+        enabled = enabled,
+        colors = CardDefaults.cardColors(
+            containerColor = if (enabled) color else color.copy(alpha = 0.45f)
+        ),
         modifier = Modifier
             .fillMaxWidth()
             .height(if (horizontal) 80.dp else 160.dp)

@@ -90,10 +90,12 @@ class MainViewModel @Inject constructor(
     }
 
     fun handleFreeUpSpaceSuccess(deletedIds: List<String>) {
+        handleLocalDeletionSuccess(deletedIds)
+    }
+
+    fun handleLocalDeletionSuccess(deletedIds: List<String>) {
         viewModelScope.launch {
-            deletedIds.forEach { id ->
-                mediaRepository.updateLocalStatus(id, false)
-            }
+            mediaRepository.markAsDeletedLocally(deletedIds)
         }
     }
 
@@ -207,22 +209,26 @@ class MainViewModel @Inject constructor(
             // 1. Quét file local
             mediaRepository.scanLocalMedia()
             
-            // 2. Sync cloud media info
-            try {
-                _uiState.value = _uiState.value.copy(statusMessage = "Fetching cloud library...")
-                mediaRepository.syncCloudMedia()
-            } catch (e: Exception) {
-                e.printStackTrace()
+            // 2. Sync cloud media info (optional by setting)
+            if (tokenManager.isCloudSyncEnabled()) {
+                try {
+                    _uiState.value = _uiState.value.copy(statusMessage = "Fetching cloud library...")
+                    mediaRepository.syncCloudMedia()
+                } catch (e: Exception) {
+                    e.printStackTrace()
 
-                // Handle re-auth required separately
-                if (e is com.example.photosync.auth.ReAuthRequiredException || (e.message?.contains("REAUTH_REQUIRED") == true)) {
-                    handleReAuthRequired()
-                    return@launch
+                    // Handle re-auth required separately
+                    if (e is com.example.photosync.auth.ReAuthRequiredException || (e.message?.contains("REAUTH_REQUIRED") == true)) {
+                        handleReAuthRequired()
+                        return@launch
+                    }
+
+                    _uiState.value = _uiState.value.copy(
+                        error = "Cloud sync failed: ${e.message}. Try signing out and in again."
+                    )
                 }
-
-                _uiState.value = _uiState.value.copy(
-                    error = "Cloud sync failed: ${e.message}. Try signing out and in again."
-                )
+            } else {
+                _uiState.value = _uiState.value.copy(statusMessage = "Cloud sync skipped")
             }
             
             // 3. Kích hoạt Worker
@@ -240,6 +246,11 @@ class MainViewModel @Inject constructor(
                 
             val syncRequest = OneTimeWorkRequestBuilder<SyncWorker>()
                 .setConstraints(constraints)
+                .setBackoffCriteria(
+                    androidx.work.BackoffPolicy.EXPONENTIAL,
+                    30,
+                    java.util.concurrent.TimeUnit.SECONDS
+                )
                 .build()
                 
             WorkManager.getInstance(application).enqueue(syncRequest)

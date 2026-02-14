@@ -102,6 +102,6 @@ class TokenManager @Inject constructor(
     }
 
     fun isCloudSyncEnabled(): Boolean {
-        return settingsPrefs.getBoolean("cloud_sync_enabled", false)
+        return settingsPrefs.getBoolean("cloud_sync_enabled", true)
     }
 }

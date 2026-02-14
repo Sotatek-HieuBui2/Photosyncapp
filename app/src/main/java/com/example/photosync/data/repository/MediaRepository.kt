@@ -28,8 +28,56 @@ class MediaRepository @Inject constructor(
     val allMediaItems = mediaDao.getAllMediaItems()
 
     suspend fun syncCloudMedia() = withContext(Dispatchers.IO) {
-        // Cloud sync feature disabled per user request — do nothing here to avoid auth errors.
-        Log.w(TAG, "syncCloudMedia called but cloud sync is disabled. Skipping cloud operations.")
+        if (!tokenManager.isCloudSyncEnabled()) {
+            Log.d(TAG, "Cloud sync disabled. Skipping cloud media fetch.")
+            return@withContext
+        }
+
+        val token = tokenManager.getAccessToken()
+        if (token.isNullOrBlank()) {
+            Log.w(TAG, "Cannot sync cloud media: missing access token.")
+            return@withContext
+        }
+
+        try {
+            val response = api.listMediaItems(token = "Bearer $token", pageSize = 100)
+            val remoteItems = response.mediaItems.orEmpty()
+
+            if (remoteItems.isEmpty()) {
+                Log.d(TAG, "Cloud media fetch completed: no items returned.")
+                return@withContext
+            }
+
+            val now = System.currentTimeMillis()
+            val entities = remoteItems.map { media ->
+                val googleId = media.id
+                val createdAt = parseGoogleDate(media.mediaMetadata?.creationTime)
+
+                MediaItemEntity(
+                    id = "remote:$googleId",
+                    fileName = media.filename ?: "Cloud item $googleId",
+                    filePath = "",
+                    mimeType = media.mimeType ?: "image/jpeg",
+                    fileSize = 0L,
+                    dateAdded = createdAt,
+                    isSynced = true,
+                    isLocal = false,
+                    remoteUrl = media.baseUrl,
+                    googlePhotosId = googleId,
+                    lastSyncedAt = now
+                )
+            }
+
+            mediaDao.insertAll(entities)
+            Log.d(TAG, "Cloud media sync inserted/merged ${entities.size} items.")
+        } catch (e: retrofit2.HttpException) {
+            if (e.code() == 401 || e.code() == 403) {
+                throw com.example.photosync.auth.ReAuthRequiredException(
+                    "REAUTH_REQUIRED: Cloud media access denied (${e.code()})"
+                )
+            }
+            throw e
+        }
     }
 
     private fun parseGoogleDate(dateString: String?): Long {
@@ -51,7 +99,6 @@ class MediaRepository @Inject constructor(
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
-            MediaStore.MediaColumns.DATA,
             MediaStore.MediaColumns.MIME_TYPE,
             MediaStore.MediaColumns.SIZE,
             MediaStore.MediaColumns.DATE_ADDED
@@ -74,15 +121,16 @@ class MediaRepository @Inject constructor(
     }
 
     suspend fun markAsDeletedLocally(ids: List<String>) {
-        val updates = ids.mapNotNull { id ->
-            // We need to fetch the item first to know if we should delete it or just update it
-            // But for bulk update, we assume we just want to set isLocal = false
-            // However, if it's not synced, we should probably delete it from DB entirely?
-            // For "Free up space", they are synced, so we update.
-            // For "Delete", if synced, update. If not synced, delete.
-            // Let's handle this logic in ViewModel or here.
-            // For now, let's just provide a method to update isLocal = false
-            null // Placeholder
+        ids.forEach { id ->
+            val item = mediaDao.getById(id) ?: return@forEach
+
+            if (item.isSynced) {
+                // Keep record for cloud-backed item, only mark local file removed.
+                mediaDao.updateLocalStatus(id, false)
+            } else {
+                // Not uploaded yet and deleted locally -> remove stale DB entry.
+                mediaDao.deleteById(id)
+            }
         }
     }
     
@@ -108,7 +156,6 @@ class MediaRepository @Inject constructor(
             )?.use { cursor ->
                 val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
                 val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-                val pathColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
                 val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
                 val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
                 val dateAddedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
@@ -118,7 +165,6 @@ class MediaRepository @Inject constructor(
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idColumn)
                     val name = cursor.getString(nameColumn)
-                    val path = cursor.getString(pathColumn)
                     val mime = cursor.getString(mimeColumn)
                     val size = cursor.getLong(sizeColumn)
                     val dateAdded = cursor.getLong(dateAddedColumn)
@@ -129,7 +175,8 @@ class MediaRepository @Inject constructor(
                     val entity = MediaItemEntity(
                         id = contentUri.toString(), // Dùng URI làm ID
                         fileName = name ?: "Unknown",
-                        filePath = path ?: "",
+                        // Avoid relying on deprecated/blocked filesystem path columns under scoped storage.
+                        filePath = "",
                         mimeType = mime ?: "application/octet-stream",
                         fileSize = size,
                         dateAdded = dateAdded
@@ -148,3 +195,4 @@ class MediaRepository @Inject constructor(
         }
     }
 }
+

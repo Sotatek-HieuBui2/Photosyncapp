@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
                 // Main Navigation Controller
                 var currentScreen by remember { mutableStateOf(Screen.Photos) }
                 val context = LocalContext.current
+                val mainViewModel: MainViewModel = hiltViewModel()
                 
                 // Shared delete logic
                 var pendingDeleteItems by remember { mutableStateOf<List<com.example.photosync.data.local.MediaItemEntity>?>(null) }
@@ -103,7 +104,11 @@ class MainActivity : ComponentActivity() {
                 val deleteLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartIntentSenderForResult()
                 ) { result ->
+                    val deletedItems = pendingDeleteItems.orEmpty()
                     if (result.resultCode == Activity.RESULT_OK) {
+                        if (deletedItems.isNotEmpty()) {
+                            mainViewModel.handleLocalDeletionSuccess(deletedItems.map { it.id })
+                        }
                         Toast.makeText(context, "Deleted successfully", Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(context, "Deletion cancelled or failed", Toast.LENGTH_SHORT).show()
@@ -170,6 +175,7 @@ class MainActivity : ComponentActivity() {
                     Box(modifier = Modifier.padding(innerPadding)) {
                         when (currentScreen) {
                             Screen.Photos -> MainScreen(
+                                viewModel = mainViewModel,
                                 onNavigateToTools = { currentScreen = Screen.Library }, // Redirect to Library
                                 onDeleteRequested = { items -> launchDelete(items) }
                             )

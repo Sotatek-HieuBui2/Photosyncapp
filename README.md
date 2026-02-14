@@ -1,55 +1,67 @@
 # PhotoSync
 
-Android application to sync photos and videos to Google Photos.
+Android app to sync local photos/videos to Google Photos with background upload, local tracking, and utility tools.
 
-## Features
-- Sync local photos/videos to Google Photos.
-- Check Google Drive storage quota.
-- Local database (Room) to track sync status.
-- Background sync using WorkManager.
+## Current status
+
+- Platform: Android `minSdk 24`, `target/compileSdk 34`
+- Language/UI: Kotlin + Jetpack Compose
+- Build JDK: Java 17
+- CI: GitHub Actions runs lint + unit tests
+
+## Main features
+
+- Google sign-in and token diagnostics
+- Local media scan via `MediaStore` (URI-based)
+- Google Photos upload flow (`uploads` + `mediaItems:batchCreate`)
+- Foreground sync worker with progress/ETA
+- Auto-sync toggle and Wi-Fi only constraints
+- Duplicate finder and object tagging tools
+- Search by tags with debounced query
 
 ## Setup
-1. Open the project in Android Studio.
-2. Configure your Google Cloud Project and get the OAuth 2.0 Client ID.
-3. Update `SyncWorker.kt` with your token management logic.
-4. Build and run.
+
+1. Open project in Android Studio (latest stable recommended).
+2. Use JDK 17 for Gradle/Android build.
+3. Configure Google Cloud OAuth for package `com.example.photosync` and your SHA-1/SHA-256.
+4. Place your local `app/google-services.json` manually if needed for local development.
+   - This file is intentionally ignored and must not be committed.
+5. Build and run:
+   - `./gradlew assembleDebug`
+
+## Test and CI
+
+- Unit tests:
+  - `./gradlew testDebugUnitTest`
+- Lint + tests (same as CI):
+  - `./gradlew lintDebug testDebugUnitTest`
+
+CI workflow file: `.github/workflows/ci.yml`
 
 ## Architecture
-- **MVVM**: Model-View-ViewModel pattern.
-- **Repository**: Data abstraction.
-- **Room**: Local caching.
-- **Retrofit**: Network calls.
-- **WorkManager**: Background tasks.
 
-## Troubleshooting Google Photos auth (diagnostics)
+- `MainActivity` + Compose screens
+- `MainViewModel` and `ToolsViewModel` (MVVM)
+- `MediaRepository` as data orchestration layer
+- Room DB (`AppDatabase`, `MediaDao`, `MediaItemEntity`)
+- Retrofit APIs (`GooglePhotosApi`, `GoogleDriveApi`)
+- WorkManager worker (`SyncWorker`)
+- Hilt DI modules (`NetworkModule`, `DatabaseModule`)
 
-Quick reproduction and diagnostics for Google Photos auth issues:
+## Cloud sync behavior
 
-1) Purpose
-- This section explains how to reproduce the tokeninfo diagnostic output and where the app stores it. Useful when troubleshooting 401/403 "insufficient authentication scope".
+- Cloud metadata sync runs in `MediaRepository.syncCloudMedia()`.
+- `cloud_sync_enabled` default is `true` in `TokenManager`.
+- If cloud sync is disabled, app skips cloud fetch and continues local scan/upload flow.
 
-2) How diagnostics are collected
-- `AuthManager` calls `https://oauth2.googleapis.com/tokeninfo?access_token=...` after obtaining an access token.
-- The tokeninfo body (JSON) is saved via `TokenManager.saveDiagnostic("tokeninfo", ...)` after redaction.
-- Saved setting key in app settings: `diag_tokeninfo` (stored in `SharedPreferences` named `app_settings`).
+## Auth diagnostics
 
-3) Where to find diagnostics in the running app
-- After a failing sign-in or token retrieval, the app surfaces a short diagnostic string in the main UI error banner (the message includes the saved `tokeninfo` content or a shortened form).
-- Alternatively, inspect `app_settings` `SharedPreferences` programmatically or via ADB.
+- `AuthManager` validates token scopes via OAuth2 tokeninfo endpoint.
+- Diagnostic payload is stored under key `diag_tokeninfo` in `app_settings`.
+- Sensitive token fields are redacted by `TokenManager.saveDiagnostic()`.
 
-4) Redaction and privacy
-- The saved diagnostic JSON has `access_token`, `id_token`, and `refresh_token` fields replaced with `<redacted>` when present. Non-JSON values are truncated to 2000 chars.
+## Known limitations
 
-5) Recommended steps to gather useful info
-- Run the app on your device/emulator.
-- Sign in and reproduce the failing flow.
-- Copy the UI error banner text (it contains the persisted `tokeninfo` or a short explanation).
-- Paste the diagnostic here (or attach) so the team can inspect `scope`, `audience`, and `token_type`.
-
-6) Next actions once diagnostic is available
-- If `scope` doesn't contain photoslibrary scopes: update requested scopes or force re-consent.
-- If `aud` doesn't match expected `client_id`: ensure package name + SHA-1 match OAuth client in GCP.
-- If `token_type` isn't `Bearer` or token appears as `id_token` only: request proper access token or switch to server auth code exchange.
-
-7) Tests
-- Unit tests for `MainViewModel` cover sign-in success/failure and reauth behavior. See `app/src/test`.
+- `AuthManager` currently still uses `GoogleAuthUtil` token flow (legacy direction).
+- `Smart Optimize` and `Backup Verification` cards are present but feature-flagged off.
+- DB uses `fallbackToDestructiveMigration()` and still needs proper migration path.
