@@ -46,4 +46,5 @@ jobs:
 
       - name: Run lint and unit tests
         run: |
+          chmod +x ./gradlew
           ./gradlew --no-daemon lintDebug testDebugUnitTest
